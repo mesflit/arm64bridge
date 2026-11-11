@@ -48,7 +48,7 @@ Options shown when applicable:
   rate (no overlay permission needed). Tap it for the menu, drag it to move it, hold it to open this project page.
 - **FPS booster** (optional): adds a switch to that menu: off (the game's own limit), 60 FPS or unlimited (the
   display still paces frames). Games whose frame limiter waits on the clock get a new frame time; the bridge
-  recognises the Gameloft engine limiter (Minion Rush and other Gameloft games of that time) by its code. For other
+  recognises the Gameloft engine limiters (Minion Rush and other Gameloft games of that time) by their code. For other
   games the render thread's sleeps are halved or skipped. If a game ties its speed to the frame rate it runs too
   fast with the booster on; switch it off in the same menu. The log also records where a game's limiter is
   ("frame limiter probe"), which helps adding support for more engines.

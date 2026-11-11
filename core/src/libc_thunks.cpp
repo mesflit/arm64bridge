@@ -499,6 +499,7 @@ void register_libc_thunks() {
     });
     reg("usleep", +[](u32 us) -> int {
         probe_time_call(2, us);
+        if (Cpu* c = Cpu::current_or_null()) frame_cap_on_sleep(*c, us);
         if (int mode = limiter_mode_for_this_thread()) {
             if (mode == 2) return 0;
             us /= 2;

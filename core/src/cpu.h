@@ -115,6 +115,7 @@ void probe_frame();
 struct Module;
 void frame_cap_scan(Module* m);
 void frame_cap_on_clock(Cpu& c);
+void frame_cap_on_sleep(Cpu& c, u32& us);
 bool frame_cap_known();
 extern std::atomic<int> g_render_tid;  // thread that last called eglSwapBuffers
 [[noreturn]] void guest_crash(Cpu& c, const char* why);

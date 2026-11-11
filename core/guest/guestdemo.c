@@ -59,6 +59,41 @@ __asm__(
     ".size test_frame_limiter, .-test_frame_limiter\n");
 long long test_frame_limiter(void* obj);
 
+/* The Gameloft game loop frame sleep (same instructions from "mov r2, r0" to "bl usleep"):
+   r0:r1 = now (ms), r2 = &last, r3 = where "now" is stored. Sleeps last + 30 - now ms when that is
+   1..29; returns 1 if it called usleep. */
+__asm__(
+    ".text\n.arm\n.align 2\n"
+    ".type test_frame_sleep, %function\n"
+    "test_frame_sleep:\n"
+    "  push {r4, r5, r11, lr}\n"
+    "  mov r5, r2\n"
+    "  sub r4, r3, pc\n"           /* r4 = r3 - (here + 8) */
+    "  sub r4, r4, #20\n"          /* the add below is 20 bytes further */
+    "  mov r2, r0\n"
+    "  mov r3, r1\n"
+    "  ldrd r0, r1, [r5]\n"
+    "  add r5, pc, r4\n"           /* r5 = original r3 */
+    "  orrs r1, r0, r1\n"
+    "  strd r2, r3, [r5]\n"
+    "  .word 0x0a000011\n"         /* beq skip (19 instructions further) */
+    "  rsb r1, r2, #30\n"
+    "  add r0, r1, r0\n"
+    "  sub r1, r0, #1\n"
+    "  cmp r1, #28\n"
+    "  .word 0x8a000002\n"         /* bhi after the call */
+    "  mov r1, #1000\n"
+    "  mul r0, r0, r1\n"
+    "  bl usleep\n"
+    "  mov r0, #1\n"
+    "  b 2f\n"
+    "  .rept 8\n  nop\n  .endr\n"
+    "  mov r0, #0\n"               /* skip: no previous frame */
+    "2:\n"
+    "  pop {r4, r5, r11, pc}\n"
+    ".size test_frame_sleep, .-test_frame_sleep\n");
+int test_frame_sleep(unsigned lo, unsigned hi, long long* last, long long* store);
+
 /* ---- bound through exported Java_* symbols ---- */
 
 JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_add(JNIEnv* env, jclass cls, jint a, jint b) {
@@ -360,4 +395,10 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
 JNIEXPORT jlong JNICALL Java_com_mesflit_arm64bridge_GuestDemo_frameLimiter(JNIEnv* env, jclass cls, jlong target) {
     struct { unsigned char enabled; unsigned char pad[7]; long long frame_us; long long last_us; } obj = {1, {0}, target, 0};
     return test_frame_limiter(&obj);
+}
+
+/* Runs the game loop frame sleep as if the previous frame started elapsed_ms ago; returns 1 if it slept. */
+JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_frameSleep(JNIEnv* env, jclass cls, jint elapsed_ms) {
+    long long now = 1000000, last = now - elapsed_ms, store = 0;
+    return test_frame_sleep((unsigned)now, 0, &last, &store);
 }
