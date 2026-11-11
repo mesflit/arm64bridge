@@ -8,6 +8,8 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <chrono>
+#include <thread>
 #include <mutex>
 #include <set>
 
@@ -176,6 +178,20 @@ void open_log_file(JNIEnv* env) {
             }
         }
         if (fd >= 0) log_set_file(fd);
+        // Every 5 s: frames drawn, guest->host calls and Java->native calls. Shows whether a
+        // "frozen" game still renders and whether touch events reach the native code.
+        std::thread([] {
+            u64 last_frames = 0, last_calls = 0;
+            for (;;) {
+                std::this_thread::sleep_for(std::chrono::seconds(5));
+                u64 f = g_frames.load(), k = g_guest_host_calls.load();
+                LOGI("heartbeat: %.1f fps, %llu guest->host calls/s, %d guest threads; Java->native: %s",
+                     (f - last_frames) / 5.0, (unsigned long long)((k - last_calls) / 5), g_guest_threads.load(),
+                     jni_call_stats().c_str());
+                last_frames = f;
+                last_calls = k;
+            }
+        }).detach();
         LOGI("ARM64Bridge %s, log file: %s", A64B_VERSION, fd >= 0 ? where.c_str() : "(none)");
         LOGI("app %s on %s %s, Android %s (API %d)", pkg.c_str(), static_string(env, "android/os/Build", "MANUFACTURER").c_str(),
              static_string(env, "android/os/Build", "MODEL").c_str(), static_string(env, "android/os/Build$VERSION", "RELEASE").c_str(),

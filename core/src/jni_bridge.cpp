@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "jni_bridge.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <mutex>
@@ -377,6 +378,8 @@ struct NativeMethod {
     u32 guest_fn;
     std::string shorty;
     std::string name;
+    std::atomic<u64> calls{0};
+    u64 reported = 0;
 };
 constexpr u32 kMaxTrampolines = 4096;
 #if defined(__aarch64__)
@@ -634,7 +637,11 @@ void* jni_make_trampoline(u32 guest_fn, const std::string& shorty, const std::st
         LOGE("too many native methods (limit %u)", kMaxTrampolines);
         return nullptr;
     }
-    g_methods[idx] = new NativeMethod{guest_fn, shorty, name};
+    auto* nm = new NativeMethod();
+    nm->guest_fn = guest_fn;
+    nm->shorty = shorty;
+    nm->name = name;
+    g_methods[idx] = nm;
     g_method_count.store(idx + 1);
     void* p = (void*)(a64b_tramp_pool + (size_t)idx * kTrampStride);
     g_method_cache[key] = p;
@@ -648,6 +655,7 @@ uint64_t a64b_tramp_dispatch(uint32_t index, uint64_t* saved, uint64_t* stack) {
     using namespace a64b;
     NativeMethod* m = index < kMaxTrampolines ? g_methods[index] : nullptr;
     if (!m) fatal("native method trampoline %u is not bound", index);
+    m->calls.fetch_add(1, std::memory_order_relaxed);
     u32 ngpr = 0, nfpr = 0, nstack = 0;
     uint64_t* fprs = saved + kGprCount;
     auto next_int = [&]() -> u64 { return ngpr < kGprCount ? saved[ngpr++] : stack[nstack++]; };
@@ -673,6 +681,12 @@ uint64_t a64b_tramp_dispatch(uint32_t index, uint64_t* saved, uint64_t* stack) {
             }
             case 'F': w.push_back((u32)next_fp()); break;
             case 'L': w.push_back(jni_new_local(c, (jobject)next_int())); break;
+            // The 64-bit caller leaves the upper bits of sub-word values undefined; the 32-bit
+            // callee expects them zero/sign extended.
+            case 'Z': w.push_back((u32)(next_int() & 0xff ? 1 : 0)); break;
+            case 'B': w.push_back((u32)(i32)(i8)next_int()); break;
+            case 'C': w.push_back((u32)(u16)next_int()); break;
+            case 'S': w.push_back((u32)(i32)(i16)next_int()); break;
             default: w.push_back((u32)next_int()); break;
         }
     }
@@ -868,6 +882,22 @@ int jni_bind_java_exports(JNIEnv* env, Module* m) {
     env->DeleteLocalRef(method_cls);
     LOGI("%s: bound %d Java_* native methods", m->name.c_str(), bound);
     return bound;
+}
+
+std::string jni_call_stats() {
+    std::vector<std::pair<u64, std::string>> v;
+    u32 n = g_method_count.load();
+    for (u32 i = 0; i < n; i++) {
+        NativeMethod* m = g_methods[i];
+        if (!m) continue;
+        u64 now = m->calls.load(std::memory_order_relaxed);
+        if (now != m->reported) v.emplace_back(now - m->reported, m->name);
+        m->reported = now;
+    }
+    std::sort(v.begin(), v.end(), [](auto& a, auto& b) { return a.first > b.first; });
+    std::string out;
+    for (size_t i = 0; i < v.size() && i < 12; i++) out += strfmt("%s%s x%llu", i ? ", " : "", v[i].second.c_str(), (unsigned long long)v[i].first);
+    return out.empty() ? "none" : out;
 }
 
 jint jni_call_onload(JNIEnv* env, Module* m) {

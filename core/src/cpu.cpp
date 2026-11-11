@@ -12,6 +12,10 @@
 
 namespace a64b {
 
+std::atomic<u64> g_guest_host_calls{0};
+std::atomic<u64> g_frames{0};
+std::atomic<int> g_guest_threads{0};
+
 // ---------------------------------------------------------------------------
 // Trap stubs.  Every slot is "svc #0; bx lr" (ARM mode). The slot index selects
 // the host handler. All slots are written once at start-up so translated code
@@ -293,6 +297,7 @@ void Cpu::run(u32 pc) {
             pc_override = false;
             u32 lr = r[14];
             trace[trace_pos++ % 32] = idx + 1;
+            g_guest_host_calls.fetch_add(1, std::memory_order_relaxed);
             if (!g_trap_called[idx].exchange(1, std::memory_order_relaxed)) LOGI("first call: %s", t.name);
             t.fn(*this, t.ud);
             store_regs(regs_dirty);

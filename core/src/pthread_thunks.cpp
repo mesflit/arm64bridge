@@ -173,6 +173,7 @@ void* thread_main(void* p) {
     ThreadRec* t = g_threads.get(id);
     Cpu& c = Cpu::current();
     c.thread_id = id;
+    g_guest_threads.fetch_add(1);
     u32 ret = 0;
     try {
         ret = (u32)c.call(t->fn, {t->arg});
@@ -185,6 +186,7 @@ void* thread_main(void* p) {
     } catch (const ThreadExit&) {
     }
     t->retval.store(ret);
+    g_guest_threads.fetch_sub(1);
     return nullptr;
 }
 

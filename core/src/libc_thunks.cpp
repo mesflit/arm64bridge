@@ -691,14 +691,6 @@ void register_libc_thunks() {
         if (tv) { h.tv_sec = tv->tv_sec; h.tv_usec = tv->tv_usec; hp = &h; }
         return select(n, r, w, e, hp);
     });
-    reg("getaddrinfo", +[](const char* node, const char*, void*, u32* res) -> int {
-        LOGW("getaddrinfo(%s): name resolution is not bridged yet", node ? node : "");
-        if (res) *res = 0;
-        return 4;  // EAI_FAIL
-    });
-    reg("freeaddrinfo", +[](u32) {});
-    reg("gai_strerror", +[](int) -> u32 { return intern_guest_string("name resolution unavailable"); });
-    reg("gethostbyname", +[](const char*) -> u32 { return 0; });
     reg("inet_addr", +[](const char* s) -> u32 {
         unsigned a, b, cc, d;
         if (sscanf(s, "%u.%u.%u.%u", &a, &b, &cc, &d) != 4) return 0xFFFFFFFF;

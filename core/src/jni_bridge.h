@@ -40,5 +40,7 @@ void* jni_make_trampoline(u32 guest_fn, const std::string& shorty, const std::st
 std::string jni_shorty_from_signature(const char* sig);
 // Class loader used to look up the app's classes without running their static initialisers.
 void jni_set_app_class_loader(JNIEnv* env, jobject loader);
+// Java -> guest native calls per method since the previous call of this function.
+std::string jni_call_stats();
 
 }  // namespace a64b

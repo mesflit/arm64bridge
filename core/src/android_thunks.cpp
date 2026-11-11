@@ -333,7 +333,10 @@ void register_android_thunks() {
     reg("eglMakeCurrent", +[](u32 d, u32 draw, u32 read, u32 ctx) -> u32 {
         return eglMakeCurrent(ptr_host(d), ptr_host(draw), ptr_host(read), ptr_host(ctx));
     });
-    reg("eglSwapBuffers", +[](u32 d, u32 s) -> u32 { return eglSwapBuffers(ptr_host(d), ptr_host(s)); });
+    reg("eglSwapBuffers", +[](u32 d, u32 s) -> u32 {
+        g_frames.fetch_add(1, std::memory_order_relaxed);
+        return eglSwapBuffers(ptr_host(d), ptr_host(s));
+    });
     reg("eglGetCurrentContext", +[]() -> u32 { return ptr_token(eglGetCurrentContext()); });
     reg("eglGetCurrentDisplay", +[]() -> u32 { return ptr_token(eglGetCurrentDisplay()); });
     reg("eglGetCurrentSurface", +[](int which) -> u32 { return ptr_token(eglGetCurrentSurface(which)); });

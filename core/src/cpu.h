@@ -2,6 +2,7 @@
 // guest code call host functions.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
+#include <atomic>
 #include <string>
 #include <vector>
 
@@ -78,6 +79,9 @@ struct Cpu {
 };
 
 bool cpu_global_init();
+extern std::atomic<u64> g_guest_host_calls;
+extern std::atomic<u64> g_frames;
+extern std::atomic<int> g_guest_threads;
 [[noreturn]] void guest_crash(Cpu& c, const char* why);
 // Implemented by the loader: "libfoo.so+0x1234 (symbol)".
 std::string describe_address(u32 addr);

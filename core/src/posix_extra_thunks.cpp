@@ -5,6 +5,7 @@
 #include <arpa/inet.h>
 #include <net/if.h>
 #include <netdb.h>
+#include <netinet/in.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/ioctl.h>
@@ -286,6 +287,78 @@ void register_posix_extra_thunks() {
     reg("inet_ntop", +[](int af, const void* src, char* dst, u32 n) -> char* { return (char*)inet_ntop(af, src, dst, n); });
     reg("inet_pton", +[](int af, const char* src, void* dst) -> int { return inet_pton(af, src, dst); });
     reg("gethostbyaddr", +[](const void*, u32, int) -> u32 { return 0; });
+    // struct addrinfo (LP32): flags, family, socktype, protocol, addrlen, canonname, addr, next
+    reg("getaddrinfo", +[](const char* node, const char* service, const i32* ghints, u32* out) -> int {
+        addrinfo hints, *res = nullptr;
+        memset(&hints, 0, sizeof(hints));
+        if (ghints) {
+            hints.ai_flags = ghints[0];
+            hints.ai_family = ghints[1];
+            hints.ai_socktype = ghints[2];
+            hints.ai_protocol = ghints[3];
+        }
+        int r = getaddrinfo(node, service, ghints ? &hints : nullptr, &res);
+        LOGI("getaddrinfo(%s, %s) = %d", node ? node : "", service ? service : "", r);
+        if (r != 0) return r;
+        u32 head = 0, *link = &head;
+        for (addrinfo* ai = res; ai; ai = ai->ai_next) {
+            u32 g = g_calloc(1, 32 + (u32)ai->ai_addrlen);
+            u32* f = g2h<u32>(g);
+            f[0] = (u32)ai->ai_flags;
+            f[1] = (u32)ai->ai_family;
+            f[2] = (u32)ai->ai_socktype;
+            f[3] = (u32)ai->ai_protocol;
+            f[4] = (u32)ai->ai_addrlen;
+            f[5] = ai->ai_canonname ? g_strdup(ai->ai_canonname) : 0;
+            f[6] = g + 32;
+            memcpy(g2h(g + 32), ai->ai_addr, ai->ai_addrlen);
+            f[7] = 0;
+            *link = g;
+            link = &f[7];
+        }
+        freeaddrinfo(res);
+        *out = head;
+        return 0;
+    });
+    reg("freeaddrinfo", +[](u32 g) {
+        while (g) {
+            u32* f = g2h<u32>(g);
+            u32 next = f[7];
+            if (f[5]) g_free(f[5]);
+            g_free(g);
+            g = next;
+        }
+    });
+    reg("gai_strerror", +[](int e) -> u32 { return guest_intern_string(gai_strerror(e)); });
+    // struct hostent (LP32): name, aliases, addrtype, length, addr_list. One buffer per thread.
+    reg("gethostbyname", +[](const char* name) -> u32 {
+        addrinfo hints, *res = nullptr;
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_INET;
+        int r = getaddrinfo(name, nullptr, &hints, &res);
+        LOGI("gethostbyname(%s) = %d", name ? name : "", r);
+        if (r != 0 || !res) return 0;
+        static thread_local u32 buf = 0;
+        if (!buf) buf = g_calloc(1, 64 + 16 * 4 + 16 * 4 + 256);
+        u32* he = g2h<u32>(buf);
+        u32 addrs = buf + 64, list = buf + 64 + 64, name_g = buf + 64 + 128;
+        snprintf(g2h<char>(name_g), 256, "%s", name);
+        int n = 0;
+        for (addrinfo* ai = res; ai && n < 15; ai = ai->ai_next) {
+            if (ai->ai_family != AF_INET) continue;
+            memcpy(g2h(addrs + n * 4), &reinterpret_cast<sockaddr_in*>(ai->ai_addr)->sin_addr, 4);
+            g2h<u32>(list)[n] = addrs + n * 4;
+            n++;
+        }
+        g2h<u32>(list)[n] = 0;
+        freeaddrinfo(res);
+        he[0] = name_g;
+        he[1] = list + n * 4;  // empty alias list (points at the terminating NULL)
+        he[2] = AF_INET;
+        he[3] = 4;
+        he[4] = list;
+        return n ? buf : 0;
+    });
 
     // ---------------------------------------------------------------- users
     auto pw = +[]() -> u32 {
