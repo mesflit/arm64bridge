@@ -3,6 +3,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include <atomic>
+#include <deque>
+#include <unordered_map>
 #include <string>
 #include <vector>
 
@@ -56,7 +58,12 @@ struct Cpu {
 
     // JNI local reference tokens (see jni_bridge.cpp)
     std::vector<void*> locals;
-    std::vector<u32> local_free;
+    std::vector<u32> local_serials;   // token number of each entry (ascending, never reused)
+    u32 next_local_serial = 1;
+    // Object arguments of finished native calls, kept alive as global references: games written
+    // for Dalvik often keep such a jobject and use it in a later call.
+    std::unordered_map<u32, void*> kept_refs;
+    std::deque<u32> kept_order;
 
     static Cpu& current();
     static Cpu* current_or_null();

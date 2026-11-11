@@ -355,6 +355,8 @@ void register_stdio_thunks() {
     reg("fileno", +[](u32 g) -> int { FILE* f = hf(g); return f ? fileno(f) : -1; });
     reg("fgets", +[](char* b, int n, u32 g) -> char* { FILE* f = hf(g); return f ? fgets(b, n, f) : nullptr; });
     reg("fgetc", +[](u32 g) -> int { FILE* f = hf(g); return f ? fgetc(f) : EOF; });
+    reg("__srget", +[](u32 g) -> int { FILE* f = hf(g); return f ? fgetc(f) : EOF; });  // getc() macro refill
+    reg("__swbuf", +[](int ch, u32 g) -> int { FILE* f = hf(g); return f ? fputc(ch, f) : EOF; });
     reg("getc", +[](u32 g) -> int { FILE* f = hf(g); return f ? fgetc(f) : EOF; });
     reg("ungetc", +[](int ch, u32 g) -> int { FILE* f = hf(g); return f ? ungetc(ch, f) : EOF; });
     reg("fputc", +[](int ch, u32 g) -> int { FILE* f = hf(g); if (!f) return EOF; emit(f, std::string(1, (char)ch)); return ch; });

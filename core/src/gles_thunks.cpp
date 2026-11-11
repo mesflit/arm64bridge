@@ -5,6 +5,7 @@
 
 #ifdef __ANDROID__
 #include <GLES/gl.h>
+#include <GLES/glext.h>
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
 #include <mutex>
@@ -52,6 +53,12 @@ void register_gles_thunks() {
     G(glMultMatrixf) G(glMultiTexCoord4f) G(glNormal3f) G(glNormalPointer) G(glOrthof) G(glPointSize)
     G(glPopMatrix) G(glPushMatrix) G(glRotatef) G(glScalef) G(glShadeModel) G(glTexCoordPointer) G(glTexEnvf)
     G(glTexEnvfv) G(glTexEnvi) G(glTranslatef) G(glVertexPointer)
+    // ---- OES framebuffer objects (OpenGL ES 1.x extension) ----
+    G(glGenRenderbuffersOES) G(glDeleteRenderbuffersOES) G(glBindRenderbufferOES) G(glRenderbufferStorageOES)
+    G(glGenFramebuffersOES) G(glDeleteFramebuffersOES) G(glBindFramebufferOES) G(glFramebufferTexture2DOES)
+    G(glFramebufferRenderbufferOES) G(glCheckFramebufferStatusOES) G(glGenerateMipmapOES) G(glIsFramebufferOES)
+    G(glIsRenderbufferOES) G(glGetRenderbufferParameterivOES) G(glGetFramebufferAttachmentParameterivOES)
+    G(glBlendEquationOES) G(glBlendFuncSeparateOES) G(glBlendEquationSeparateOES) G(glDrawTexiOES) G(glDrawTexfOES)
 #undef G
     // Functions that return or take host-sized pointers need manual handling.
     reg("glGetString", +[](GLenum name) -> u32 { return guest_intern_string((const char*)glGetString(name)); });

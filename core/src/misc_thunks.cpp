@@ -130,6 +130,8 @@ void register_data_symbols() {
     *g2h<u32>(guard) = 0x5AFE0000u | ((u32)getpid() << 4) | 0xA;
     thunk_register_data("__stack_chk_guard", guard);
 
+    thunk_register_data("__dso_handle", g_calloc(1, 8));
+
     u32 env = g_calloc(1, 8);  // char** environ -> { NULL }
     u32 envp = g_calloc(1, 4);
     *g2h<u32>(envp) = env;

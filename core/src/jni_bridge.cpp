@@ -105,25 +105,39 @@ JNIEnv* jni_host_env(Cpu& c) {
     return static_cast<JNIEnv*>(c.host_env);
 }
 
+namespace {
+constexpr size_t kMaxKeptRefs = 512;
+
+// Index of a local token in the thread's table, or -1.
+int local_index(Cpu& c, u32 serial) {
+    auto it = std::lower_bound(c.local_serials.begin(), c.local_serials.end(), serial);
+    if (it == c.local_serials.end() || *it != serial) return -1;
+    return (int)(it - c.local_serials.begin());
+}
+}  // namespace
+
 u32 jni_new_local(Cpu& c, jobject obj) {
     if (!obj) return 0;
-    u32 idx;
-    if (!c.local_free.empty()) {
-        idx = c.local_free.back();
-        c.local_free.pop_back();
-        c.locals[idx] = obj;
-    } else {
-        idx = (u32)c.locals.size();
-        c.locals.push_back(obj);
+    u32 serial = c.next_local_serial++;
+    if (c.next_local_serial >= kLocalTag) {  // wrapped: start over (stale tokens become invalid)
+        c.next_local_serial = 1;
+        c.locals.clear();
+        c.local_serials.clear();
+        serial = c.next_local_serial++;
     }
-    return kLocalTag | idx;
+    c.locals.push_back(obj);
+    c.local_serials.push_back(serial);
+    return kLocalTag | serial;
 }
 
 jobject jni_to_host(Cpu& c, u32 tok) {
     if (!tok) return nullptr;
     u32 idx = tok & ~kTagMask;
     if ((tok & kTagMask) == kLocalTag) {
-        if (idx < c.locals.size()) return static_cast<jobject>(c.locals[idx]);
+        int i = local_index(c, idx);
+        if (i >= 0 && c.locals[i]) return static_cast<jobject>(c.locals[i]);
+        auto kept = c.kept_refs.find(idx);
+        if (kept != c.kept_refs.end()) return static_cast<jobject>(kept->second);
     } else if ((tok & kTagMask) == kGlobalTag) {
         std::lock_guard<std::mutex> lk(g_global_mu);
         if (idx < g_globals.size()) return g_globals[idx];
@@ -134,8 +148,26 @@ jobject jni_to_host(Cpu& c, u32 tok) {
 
 JniFrame::JniFrame(Cpu& cpu, JNIEnv* env) : c(cpu), base(cpu.locals.size()), saved_env(cpu.host_env) { c.host_env = env; }
 JniFrame::~JniFrame() {
-    c.locals.resize(base);
-    c.local_free.clear();
+    JNIEnv* env = static_cast<JNIEnv*>(c.host_env);
+    for (size_t i = base; env && i < base + keep && i < c.locals.size(); i++) {
+        if (!c.locals[i]) continue;
+        jobject g = env->NewGlobalRef(static_cast<jobject>(c.locals[i]));
+        if (!g) continue;
+        c.kept_refs[c.local_serials[i]] = g;
+        c.kept_order.push_back(c.local_serials[i]);
+    }
+    while (env && c.kept_order.size() > kMaxKeptRefs) {
+        auto it = c.kept_refs.find(c.kept_order.front());
+        if (it != c.kept_refs.end()) {
+            env->DeleteGlobalRef(static_cast<jobject>(it->second));
+            c.kept_refs.erase(it);
+        }
+        c.kept_order.pop_front();
+    }
+    if (c.locals.size() > base) {
+        c.locals.resize(base);
+        c.local_serials.resize(base);
+    }
     c.host_env = saved_env;
 }
 
@@ -438,7 +470,7 @@ void vm_detach(Cpu& c, void*) {
     jint rc = g_vm->DetachCurrentThread();
     c.host_env = nullptr;
     c.locals.clear();
-    c.local_free.clear();
+    c.local_serials.clear();
     c.set_ret32((u32)rc);
 }
 
@@ -495,11 +527,15 @@ void build_tables() {
     HAND(DeleteWeakGlobalRef, { if (jobject o = take_global_token(a.next32())) env->DeleteWeakGlobalRef((jweak)o); });
     HAND(DeleteLocalRef, {
         u32 tok = a.next32();
-        u32 idx = tok & ~kTagMask;
-        if ((tok & kTagMask) == kLocalTag && idx < c.locals.size() && c.locals[idx]) {
-            env->DeleteLocalRef((jobject)c.locals[idx]);
-            c.locals[idx] = nullptr;
-            c.local_free.push_back(idx);
+        int i = (tok & kTagMask) == kLocalTag ? local_index(c, tok & ~kTagMask) : -1;
+        if (i >= 0 && c.locals[i]) {
+            env->DeleteLocalRef((jobject)c.locals[i]);
+            if ((size_t)i + 1 == c.locals.size()) {
+                c.locals.pop_back();
+                c.local_serials.pop_back();
+            } else {
+                c.locals[i] = nullptr;
+            }
         }
     });
 
@@ -670,6 +706,7 @@ uint64_t a64b_tramp_dispatch(uint32_t index, uint64_t* saved, uint64_t* stack) {
     w.reserve(m->shorty.size() * 2 + 2);
     w.push_back(guest_env_for(c));
     w.push_back(jni_new_local(c, self));
+    frame.keep = 1;
     for (size_t i = 1; i < m->shorty.size(); i++) {
         switch (m->shorty[i]) {
             case 'J': case 'D': {
@@ -680,7 +717,10 @@ uint64_t a64b_tramp_dispatch(uint32_t index, uint64_t* saved, uint64_t* stack) {
                 break;
             }
             case 'F': w.push_back((u32)next_fp()); break;
-            case 'L': w.push_back(jni_new_local(c, (jobject)next_int())); break;
+            case 'L':
+                w.push_back(jni_new_local(c, (jobject)next_int()));
+                frame.keep = c.locals.size() - frame.base;
+                break;
             // The 64-bit caller leaves the upper bits of sub-word values undefined; the 32-bit
             // callee expects them zero/sign extended.
             case 'Z': w.push_back((u32)(next_int() & 0xff ? 1 : 0)); break;

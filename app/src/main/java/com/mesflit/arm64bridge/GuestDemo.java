@@ -26,6 +26,8 @@ public final class GuestDemo {
     public static native int threads(int threads, int rounds);
     public static native int libc();
     public static native int posix();
+    public static native void remember(String s);
+    public static native int recallLength();
     // Registered from JNI_OnLoad with RegisterNatives:
     public native String registered(int x, String s);
     public static native boolean sameEnv();
@@ -68,6 +70,10 @@ public final class GuestDemo {
         check(sb, failed, "exception from native code", thrown);
         check(sb, failed, "fib", fib(90) == 2880067194370816120L);
         check(sb, failed, "libc score " + libc(), libc() == 63);
+        remember(new String("kept across calls"));
+        add(1, 2);
+        System.gc();
+        check(sb, failed, "object argument used after the call returned", recallLength() == 17);
         int posix = posix();
         check(sb, failed, "zlib / epoll / div_t / wide strings score " + posix, posix == 63);
         long tt = System.nanoTime();

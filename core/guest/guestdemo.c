@@ -283,6 +283,19 @@ JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_posix(JNIEnv* env,
     return score;
 }
 
+/* ---- a jobject argument kept beyond the call (worked on Dalvik; old games rely on it) ---- */
+static jstring g_remembered;
+
+JNIEXPORT void JNICALL Java_com_mesflit_arm64bridge_GuestDemo_remember(JNIEnv* env, jclass cls, jstring s) {
+    (void)env; (void)cls;
+    g_remembered = s;
+}
+
+JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_recallLength(JNIEnv* env, jclass cls) {
+    (void)cls;
+    return (*env)->GetStringUTFLength(env, g_remembered);
+}
+
 /* ---- bound through RegisterNatives in JNI_OnLoad ---- */
 static jstring native_registered(JNIEnv* env, jobject self, jint x, jstring s) {
     (void)self;
