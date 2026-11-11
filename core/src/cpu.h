@@ -9,8 +9,6 @@
 #include "common.h"
 #include "guest_mem.h"
 
-struct uc_struct;
-
 namespace a64b {
 
 struct Cpu;
@@ -27,28 +25,30 @@ struct ThreadExit {
     u32 retval;
 };
 
+struct CpuLevel;  // one JIT instance; nested guest calls get their own (see cpu.cpp)
+
 struct Cpu {
-    uc_struct* uc = nullptr;
-    // Register snapshot, valid inside trap handlers. r[13]=sp r[14]=lr r[15]=pc.
-    u32 r[16] = {};
-    u32 cpsr = 0;
-    bool regs_dirty = false;   // handler changed more than r0-r3
+    // Guest registers of the running JIT (r[13]=sp r[14]=lr r[15]=pc). Host functions read their
+    // arguments from here and write results back; there is no copying.
+    u32* r = idle_regs;
+    u32 idle_regs[16] = {};
+    u32 cpsr = 0;              // filled in for crash reports
+    bool regs_dirty = false;   // kept for handlers; unused by the dynarmic backend
     bool pc_override = false;  // handler set r[15] explicitly (with thumb bit)
 
     u32 stack_base = 0, stack_size = 0;
-    u32 tls_block = 0;     // guest thread pointer (TPIDRURO)
+    u32 tls_block = 0;     // guest thread pointer (TPIDRURO), read directly by translated code
     u32 errno_addr = 0;    // guest errno storage
     u32 guest_env = 0;     // guest JNIEnv* of this thread
     void* host_env = nullptr;  // host JNIEnv* (opaque here)
     u32 thread_id = 0;     // guest pthread_t
     int depth = 0;
     u64 epoch = 0;
-    bool trap_pending = false;
-    u32 pending_idx = 0;  // trap slot that must run in the run loop
-    u32 bad_excp = 0;
     u64 fault_addr = 0;     // address of the last invalid guest memory access
-    int fault_type = 0;
+    int fault_type = 0;     // 1 = read, 2 = write
     bool crash_reported = false;
+    bool exit_pending = false;  // pthread_exit was called; unwind out of the JIT first
+    u32 exit_value = 0;
     // Most recent host functions called by guest code on this thread (ring buffer of trap slots).
     u32 trace[32] = {};
     u32 trace_pos = 0;
@@ -68,21 +68,17 @@ struct Cpu {
     void set_ret32(u32 v) { r[0] = v; }
     void set_ret64(u64 v) { r[0] = (u32)v; r[1] = (u32)(v >> 32); }
     void sync_errno();
+    // VFP/NEON registers of the running JIT as 64 words (d0 = words 0,1).
+    u32* ext_regs();
 
     ~Cpu();
 
-    // Called from the CPU's SVC handler (raw guest system calls).
-    void on_swi();
-    // Called by a code hook on the trap stubs: runs a host function without leaving the emulator.
-    void on_trap(u32 addr);
+    // Called by translated code for "svc #n" (n = trap slot + 1, 0 = raw system call).
+    void on_svc(u32 swi);
 
   private:
     Cpu();
-    void run(u32 pc);
-    void dispatch_trap(u32 idx);
-    void load_regs();       // all registers
-    void load_call_regs();  // r0-r3, sp, lr, pc: what a host function needs
-    void store_regs(bool all);
+    std::vector<CpuLevel*> levels;
     friend struct CpuHolder;
 };
 
@@ -90,30 +86,15 @@ bool cpu_global_init();
 extern std::atomic<u64> g_guest_host_calls;
 extern std::atomic<u64> g_frames;
 extern std::atomic<int> g_guest_threads;
-extern std::atomic<u64> g_gil_switches;
 extern std::atomic<int> g_render_tid;  // thread that last called eglSwapBuffers
 [[noreturn]] void guest_crash(Cpu& c, const char* why);
 // Implemented by the loader: "libfoo.so+0x1234 (symbol)".
 std::string describe_address(u32 addr);
 
-// Global interpreter lock: only one thread executes guest code at a time so that
-// guest atomics (LDREX/STREX) behave correctly. Released while in host handlers.
-void gil_acquire(Cpu* c);
-void gil_release();
-// Fully drops the GIL (whatever the nesting depth) and returns the depth to restore.
-int gil_release_all();
-void gil_restore(int depth, Cpu* c);
-// Lets another guest thread run if one asked for a turn.
-void gil_maybe_yield(Cpu* c);
-
-// Drops the GIL for the lifetime of the object (around host calls that may block).
+// Guest threads run in parallel, each on its own JIT. These remain as no-ops so that host
+// functions can keep marking the places where they may block.
 struct GilUnlock {
-    int depth;
-    Cpu* cpu;
-    explicit GilUnlock(Cpu* c) : depth(gil_release_all()), cpu(c) {}
-    ~GilUnlock() { gil_restore(depth, cpu); }
-    GilUnlock(const GilUnlock&) = delete;
-    GilUnlock& operator=(const GilUnlock&) = delete;
+    explicit GilUnlock(Cpu*) {}
 };
 
 }  // namespace a64b

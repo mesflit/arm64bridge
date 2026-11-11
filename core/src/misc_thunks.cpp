@@ -6,7 +6,6 @@
 #include <sys/syscall.h>
 #include <sys/time.h>
 #include <unistd.h>
-#include <unicorn/unicorn.h>
 
 #include <cmath>
 #include <mutex>
@@ -39,22 +38,14 @@ Module* module_from_handle(u32 h) {
     return nullptr;
 }
 
-const int kDRegs[8] = {UC_ARM_REG_D8, UC_ARM_REG_D9, UC_ARM_REG_D10, UC_ARM_REG_D11,
-                       UC_ARM_REG_D12, UC_ARM_REG_D13, UC_ARM_REG_D14, UC_ARM_REG_D15};
-
 // jmp_buf layout used by the bridge: [0..7] r4-r11, [8] sp, [9] lr, [10] magic, [12..27] d8-d15
 void do_setjmp(Cpu& c) {
-    static const int kCallee[8] = {UC_ARM_REG_R4, UC_ARM_REG_R5, UC_ARM_REG_R6, UC_ARM_REG_R7,
-                                   UC_ARM_REG_R8, UC_ARM_REG_R9, UC_ARM_REG_R10, UC_ARM_REG_R11};
-    void* ptrs[8];
-    for (int i = 0; i < 8; i++) ptrs[i] = &c.r[4 + i];
-    uc_reg_read_batch(c.uc, const_cast<int*>(kCallee), ptrs, 8);  // only r0-r3/sp/lr are loaded for host calls
     u32* buf = g2h<u32>(c.r[0]);
     for (int i = 0; i < 8; i++) buf[i] = c.r[4 + i];
     buf[8] = c.r[13];
     buf[9] = c.r[14];
     buf[10] = 0xA64B5E7A;
-    for (int i = 0; i < 8; i++) uc_reg_read(c.uc, kDRegs[i], &buf[12 + i * 2]);
+    if (u32* ext = c.ext_regs()) memcpy(&buf[12], &ext[16], 64);
     c.set_ret32(0);
 }
 
@@ -66,9 +57,8 @@ void do_longjmp(Cpu& c) {
     c.r[13] = buf[8];
     c.r[14] = buf[9];
     c.r[15] = buf[9];
-    for (int i = 0; i < 8; i++) uc_reg_write(c.uc, kDRegs[i], &buf[12 + i * 2]);
+    if (u32* ext = c.ext_regs()) memcpy(&ext[16], &buf[12], 64);
     c.r[0] = val ? val : 1;
-    c.regs_dirty = true;
     c.pc_override = true;
 }
 
@@ -122,7 +112,7 @@ u32 guest_syscall_args(Cpu& c, u32 nr, const u32 a[6]) {
             mem_bump_code_epoch();
             return 0;
         case 0xf0005:  // ARM set_tls
-            uc_reg_write(c.uc, UC_ARM_REG_C13_C0_3, &a[0]);
+            c.tls_block = a[0];
             return 0;
         default:
             LOGW("unsupported guest system call %u", nr);

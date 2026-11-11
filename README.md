@@ -25,7 +25,7 @@ lib/armeabi-v7a/libgame.so   ──►     lib/armeabi-v7a/libgame.so      (doku
    adı taşıyan küçük bir 64-bit *shim*. Android artık uygulamayı normal bir 64-bit uygulama olarak görür ve kurar.
 2. Uygulama `System.loadLibrary("game")` çağırdığında Android 64-bit shim'i yükler. Shim, köprüye haber verir.
 3. Köprü asıl 32-bit `libgame.so` dosyasını APK'nın içinden okur, 4 GB altındaki bir bellek bölgesine yükler
-   (kendi ELF yükleyicisi) ve kodu emüle edilen bir ARMv7 işlemcide ([Unicorn](https://www.unicorn-engine.org/) JIT) çalıştırır.
+   (kendi ELF yükleyicisi) ve kodu emüle edilen bir ARMv7 işlemcide ([dynarmic](https://github.com/merryhime/dynarmic) dinamik yeniden derleyici) çalıştırır.
 4. 32-bit kodun çağırdığı sistem fonksiyonları (libc, libm, pthread, liblog, OpenGL ES, EGL, ...) 64-bit gerçek
    karşılıklarına çevrilir. JNI iki yönde de köprülenir: Java → yerel metotlar ve yerel kod → `JNIEnv` çağrıları.
 
@@ -97,10 +97,10 @@ tanımlayın: `A64B_KEYSTORE_BASE64`, `A64B_KEYSTORE_PASSWORD`, `A64B_KEY_ALIAS`
 
 ARM64Bridge patches a 32-bit-only (armeabi-v7a / armeabi) APK on the device so that it installs on 64-bit-only Android:
 it adds `lib/arm64-v8a/` with a bridge runtime and one tiny shim per original library. At run time the shim makes the
-runtime load the untouched 32-bit library from the APK, execute it on an emulated ARMv7 CPU (Unicorn) and translate its
+runtime load the untouched 32-bit library from the APK, execute it through an ARMv7 dynamic recompiler (dynarmic) and translate its
 libc / pthread / JNI / OpenGL ES calls to the 64-bit host. This is an early release: the core is covered by automated
 tests, but large games are not verified yet and several NDK APIs (OpenSL ES, NativeActivity, GLES3) are still missing.
 
 ## Lisans
 
-GPL-2.0-or-later (Unicorn Engine GPLv2 lisanslıdır). Yalnızca yasal olarak sahip olduğunuz uygulamalarla kullanın.
+GPL-2.0-or-later. Yalnızca yasal olarak sahip olduğunuz uygulamalarla kullanın.

@@ -328,5 +328,5 @@ A64B_EXPORT jstring Java_com_mesflit_arm64bridge_NativeBridge_loadGuestLibrary(J
 }
 
 A64B_EXPORT jstring Java_com_mesflit_arm64bridge_NativeBridge_version(JNIEnv* env, jclass) {
-    return env->NewStringUTF("ARM64Bridge core " A64B_VERSION " (Unicorn ARMv7 engine)");
+    return env->NewStringUTF("ARM64Bridge core " A64B_VERSION " (dynarmic ARMv7 recompiler)");
 }

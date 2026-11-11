@@ -1,4 +1,4 @@
-# ARM64Bridge runtime: libarm64bridge.so (emulator + loader + thunks) and the shim.
+# ARM64Bridge runtime: libarm64bridge.so (recompiler + loader + thunks) and the shim.
 cmake_minimum_required(VERSION 3.22)
 project(arm64bridge C CXX ASM)
 
@@ -9,20 +9,34 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
-# ---- Unicorn engine (ARM guest only), built from source ----
-include(FetchContent)
-set(UNICORN_ARCH "arm" CACHE STRING "" FORCE)
-set(UNICORN_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(UNICORN_INSTALL OFF CACHE BOOL "" FORCE)
-set(UNICORN_LEGACY_STATIC_ARCHIVE OFF CACHE BOOL "" FORCE)
-set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-FetchContent_Declare(unicorn
-  GIT_REPOSITORY https://github.com/unicorn-engine/unicorn.git
-  GIT_TAG 2.1.4
-  GIT_SHALLOW TRUE
-  PATCH_COMMAND ${CMAKE_COMMAND} -DUNICORN_SRC=<SOURCE_DIR> -P ${CMAKE_CURRENT_LIST_DIR}/cmake/patch_unicorn.cmake
-  UPDATE_DISCONNECTED TRUE)
-FetchContent_MakeAvailable(unicorn)
+# ---- dynarmic (ARM -> host dynamic recompiler) ----
+option(A64B_SYSTEM_DYNARMIC "Use an installed dynarmic instead of building it" OFF)
+if(A64B_SYSTEM_DYNARMIC)
+  find_library(DYNARMIC_LIBRARY dynarmic REQUIRED)
+  add_library(dynarmic INTERFACE)
+  target_link_libraries(dynarmic INTERFACE ${DYNARMIC_LIBRARY})
+else()
+  include(FetchContent)
+  if(ANDROID)
+    # dynarmic needs the Boost headers; the NDK has none.
+    FetchContent_Declare(boost_headers
+      URL https://archives.boost.io/release/1.84.0/source/boost_1_84_0.tar.bz2)
+    FetchContent_Populate(boost_headers)
+    set(Boost_INCLUDE_DIR "${boost_headers_SOURCE_DIR}" CACHE PATH "" FORCE)
+    set(BOOST_ROOT "${boost_headers_SOURCE_DIR}" CACHE PATH "" FORCE)
+    set(Boost_NO_SYSTEM_PATHS ON CACHE BOOL "" FORCE)
+  endif()
+  set(DYNARMIC_FRONTENDS "A32" CACHE STRING "" FORCE)
+  set(DYNARMIC_TESTS OFF CACHE BOOL "" FORCE)
+  set(DYNARMIC_WARNINGS_AS_ERRORS OFF CACHE BOOL "" FORCE)
+  set(DYNARMIC_USE_BUNDLED_EXTERNALS ON CACHE BOOL "" FORCE)
+  set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(dynarmic
+    GIT_REPOSITORY https://github.com/merryhime/dynarmic.git
+    GIT_TAG 6.7.0
+    GIT_SHALLOW TRUE)
+  FetchContent_MakeAvailable(dynarmic)
+endif()
 
 add_library(arm64bridge SHARED
   src/log.cpp
@@ -44,12 +58,12 @@ add_library(arm64bridge SHARED
   src/crash.cpp
   src/zlib_thunks.cpp
   src/posix_extra_thunks.cpp)
-target_include_directories(arm64bridge PRIVATE src ${unicorn_SOURCE_DIR}/include)
+target_include_directories(arm64bridge PRIVATE src)
 set(A64B_VERSION "dev" CACHE STRING "Version string reported by the runtime")
 target_compile_definitions(arm64bridge PRIVATE A64B_VERSION="${A64B_VERSION}")
 target_compile_options(arm64bridge PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-format-security
   -Wno-format-nonliteral -U_FORTIFY_SOURCE -fvisibility=hidden -fno-strict-aliasing)
-target_link_libraries(arm64bridge PRIVATE unicorn z)
+target_link_libraries(arm64bridge PRIVATE dynarmic z)
 
 add_library(a64bshim SHARED shim/shim.c)
 # No DT_SONAME: every copy of the shim must be identified by its own file name.
