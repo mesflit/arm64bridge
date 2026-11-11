@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="pick_apk">32-bit APK seç…</string>
+    <string name="no_apk">APK seçilmedi. Yalnızca 32-bit olan bir uygulamanın (örneğin eski bir oyunun) APK dosyasını seçin; bu 64-bit cihaza kurulabilir hâle getirilecek.</string>
+    <string name="raise_target_sdk">targetSdkVersion değerini %1$d yap (bu Android sürümünde kurulum için gerekli)</string>
+    <string name="patch_install">Yamala ve kur</string>
+    <string name="patch_save">Yamala ve kaydet…</string>
+    <string name="self_test">Köprü öz sınamasını çalıştır (gömülü 32-bit ARM kodu)</string>
+    <string name="device_info">Cihaz ABI\'leri: %1$s\n32-bit uygulamalar doğal olarak destekleniyor: %2$s\n%3$s</string>
+    <string name="yes">evet</string>
+    <string name="no">hayır</string>
+    <string name="reading_apk">APK okunuyor…</string>
+    <string name="analysis_failed">Bu dosya APK olarak okunamadı: %1$s</string>
+    <string name="verdict_already64">Bu APK zaten 64-bit (arm64-v8a) kütüphaneler içeriyor. Köprüye ihtiyacı yok.</string>
+    <string name="verdict_no_native">Bu APK yerel kütüphane içermiyor. Olduğu gibi her cihazda çalışır.</string>
+    <string name="verdict_not_arm">Bu APK yalnızca %1$s için kütüphane içeriyor. Sadece 32-bit ARM (armeabi-v7a / armeabi) uygulamalar köprülenebilir.</string>
+    <string name="verdict_ok">32-bit ARM uygulama (%1$s), %2$d yerel kütüphane. Yamalanabilir.</string>
+    <string name="unresolved_none">İçe aktarılan %1$d sistem fonksiyonunun tamamı köprü tarafından karşılanıyor.</string>
+    <string name="unresolved_some">İçe aktarılan %2$d sistem fonksiyonundan %1$d tanesi köprüde henüz yok. Uygulama bunları kullandığında hata verebilir:\n%3$s</string>
+    <string name="patching">Yamalanıyor…</string>
+    <string name="signing">İmzalanıyor…</string>
+    <string name="installing">Kurulum onayı bekleniyor…</string>
+    <string name="patch_failed">Yamalama başarısız: %1$s</string>
+    <string name="install_ok">Kuruldu. Uygulamayı başlatıcıdan açabilirsiniz.</string>
+    <string name="install_failed">Kurulum başarısız: %1$s</string>
+    <string name="saved">Yamalı APK kaydedildi.</string>
+    <string name="allow_install">ARM64Bridge\'in uygulama kurmasına izin verin, sonra düğmeye tekrar dokunun.</string>
+    <string name="self_test_running">Öz sınama çalışıyor…</string>
+</resources>

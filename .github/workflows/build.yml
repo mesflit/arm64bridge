@@ -1,0 +1,106 @@
+name: Build and release
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Runs real 32-bit ARM code through the bridge under a desktop JVM.
+  core-test:
+    name: Bridge tests (x86_64 host)
+    runs-on: ubuntu-24.04
+    steps: &test-steps
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y ninja-build clang lld zlib1g-dev
+      - name: Build and test
+        run: core/test/run-host-test.sh
+
+  # Same tests on an ARM64 machine, i.e. the host architecture of Android devices.
+  # Informational: it does not gate the APK or the release.
+  core-test-arm64:
+    name: Bridge tests (arm64 host)
+    runs-on: ubuntu-24.04-arm
+    continue-on-error: true
+    steps: *test-steps
+
+  apk:
+    name: Android APK
+    runs-on: ubuntu-24.04
+    needs: core-test
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Install NDK and CMake
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018" "cmake;3.22.1" "platforms;android-35" "build-tools;35.0.0"
+      - name: Version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=v0.1.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Optional release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.A64B_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            echo "A64B_KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+          fi
+      - name: Build release APK
+        env:
+          A64B_BUILD_NUMBER: ${{ github.run_number }}
+          A64B_KEYSTORE_PASSWORD: ${{ secrets.A64B_KEYSTORE_PASSWORD }}
+          A64B_KEY_ALIAS: ${{ secrets.A64B_KEY_ALIAS }}
+          A64B_KEY_PASSWORD: ${{ secrets.A64B_KEY_PASSWORD }}
+        run: |
+          # Unset empty secret variables so the defaults of the bundled CI key apply.
+          for v in A64B_KEYSTORE_PASSWORD A64B_KEY_ALIAS A64B_KEY_PASSWORD; do [ -n "${!v}" ] || unset "$v"; done
+          ./gradlew --no-daemon assembleRelease
+          cp app/build/outputs/apk/release/app-release.apk "arm64bridge-${{ steps.version.outputs.version }}.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arm64bridge-apk
+          path: arm64bridge-*.apk
+
+  # Every push to the default branch (and every v* tag) publishes a GitHub release.
+  release:
+    name: Publish release
+    runs-on: ubuntu-24.04
+    needs: apk
+    if: github.event_name != 'pull_request' && (startsWith(github.ref, 'refs/tags/v') || github.ref_name == github.event.repository.default_branch)
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: arm64bridge-apk
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.apk.outputs.version }}
+          name: ARM64Bridge ${{ needs.apk.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          files: arm64bridge-*.apk
