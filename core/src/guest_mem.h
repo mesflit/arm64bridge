@@ -13,6 +13,8 @@ u32 mem_arena_base();
 u32 mem_arena_size();
 u32 mem_page_size();
 bool mem_contains(u64 host_addr);
+// True if the address lies in pages that are currently allocated (safe to read). Never blocks.
+bool mem_is_mapped(u32 addr, u32 len = 1);
 
 // Changes whenever translated guest code may have become stale.
 u64 mem_code_epoch();

@@ -30,6 +30,16 @@ bool mem_contains(u64 a) { return a >= g_base && a < (u64)g_base + g_size; }
 u64 mem_code_epoch() { return g_epoch.load(std::memory_order_relaxed); }
 void mem_bump_code_epoch() { g_epoch.fetch_add(1, std::memory_order_relaxed); }
 
+bool mem_is_mapped(u32 addr, u32 len) {
+    if (!mem_contains(addr) || !mem_contains((u64)addr + len - 1)) return false;
+    std::unique_lock<std::mutex> lk(g_page_mu, std::try_to_lock);
+    if (!lk.owns_lock()) return false;
+    auto it = g_used_regions.upper_bound(addr);
+    if (it == g_used_regions.begin()) return false;
+    --it;
+    return (u64)addr + len <= (u64)it->first + it->second.size;
+}
+
 static u32 round_up(u32 v, u32 a) { return (v + a - 1) & ~(a - 1); }
 
 bool mem_init() {

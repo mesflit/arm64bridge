@@ -297,6 +297,31 @@ void cpu_dump_state(Cpu& c, const char* why, bool at_fault) {
             found++;
         }
     }
+    // Text the crashing code was working with: strings reachable from the stack and registers
+    // (error messages, file names...). One level of indirection covers string objects.
+    {
+        std::vector<std::string> seen;
+        auto try_string = [&](u32 p) {
+            if (!mem_is_mapped(p, 8)) return;
+            const char* s = g2h<char>(p);
+            size_t n = 0;
+            while (n < 300 && mem_is_mapped(p + (u32)n) && s[n] >= 0x20 && s[n] < 0x7f) n++;
+            if (n < 6 || n >= 300 || !mem_is_mapped(p + (u32)n) || s[n] != 0) return;
+            std::string str(s, n);
+            for (auto& o : seen)
+                if (o == str) return;
+            if (seen.size() < 40) seen.push_back(str);
+        };
+        auto consider = [&](u32 v) {
+            try_string(v);
+            if ((v & 3) == 0 && mem_is_mapped(v, 16))
+                for (int k = 0; k < 4; k++) try_string(g2h<u32>(v)[k]);
+        };
+        for (int i = 0; i < 13; i++) consider(c.r[i]);
+        if (sp >= c.stack_base && sp < c.stack_base + c.stack_size)
+            for (u32 a = sp; a + 4 <= c.stack_base + c.stack_size && a < sp + 8192; a += 4) consider(*g2h<u32>(a));
+        for (auto& str : seen) LOGE("  text: %s", str.c_str());
+    }
     c.crash_reported = true;
 }
 
