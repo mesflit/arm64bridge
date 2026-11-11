@@ -186,7 +186,7 @@ FILE* drop_file(u32 g) {
 void emit(FILE* f, const std::string& s) {
 #ifdef __ANDROID__
     if (f == stdout || f == stderr) {
-        LOGI("[guest %s] %s", f == stdout ? "stdout" : "stderr", s.c_str());
+        log_tagged(LOG_INFO, f == stdout ? "guest-stdout" : "guest-stderr", s.c_str());
         return;
     }
 #endif

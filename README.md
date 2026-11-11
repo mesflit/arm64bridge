@@ -49,6 +49,12 @@ Notlar:
 - Android 14+ çok eski `targetSdkVersion` değerine sahip uygulamaları kurmaz. Uygulama gerekirse bu değeri yükseltmeyi
   önerir (işaret kutusu).
 
+## Bir uygulama çalışmazsa
+
+Yamalı her uygulama, her açılışta köprünün günlüğünü telefonun **İndirilenler/ARM64Bridge/** klasörüne yazar
+(`arm64bridge-<paket adı>-<tarih>.log`; Android 9 ve öncesinde `Android/data/<paket adı>/files/`). Çökme olursa
+dosyanın sonunda hangi 32-bit kodun, hangi sistem fonksiyonunu çağırırken çöktüğü yazar. Sorun bildirirken bu dosyayı ekleyin.
+
 ## Sınırlamalar (dürüst liste)
 
 - **Hız:** yerel kod JIT ile emüle edilir ve aynı anda tek iş parçacığı misafir kodu yürütür (atomik işlemlerin doğru

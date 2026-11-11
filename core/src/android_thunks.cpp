@@ -24,11 +24,7 @@ namespace a64b {
 namespace {
 
 void guest_log(int prio, const char* tag, const std::string& msg) {
-#ifdef __ANDROID__
-    __android_log_write(prio, tag ? tag : "guest", msg.c_str());
-#else
-    fprintf(stderr, "[guest %d/%s] %s\n", prio, tag ? tag : "", msg.c_str());
-#endif
+    log_tagged(prio, tag && *tag ? tag : "guest", msg.c_str());
 }
 
 // 64-bit host pointers that the guest only stores and passes back (EGL handles,

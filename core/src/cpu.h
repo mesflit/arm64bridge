@@ -18,6 +18,9 @@ using TrapFn = void (*)(Cpu& c, void* ud);
 // Allocates a guest-callable stub. Calling it from guest code invokes fn on the host.
 u32 trap_create(const char* name, TrapFn fn, void* ud);
 const char* trap_name_at(u32 addr);
+const char* trap_name_by_index(u32 idx);
+// Writes the call trace and last known registers of the current thread to the log.
+void cpu_dump_state(Cpu& c, const char* why);
 
 struct ThreadExit {
     u32 retval;
@@ -41,6 +44,9 @@ struct Cpu {
     u64 epoch = 0;
     bool trap_pending = false;
     u32 bad_excp = 0;
+    // Most recent host functions called by guest code on this thread (ring buffer of trap slots).
+    u32 trace[32] = {};
+    u32 trace_pos = 0;
     u32 tls_values[256] = {};
 
     // JNI local reference tokens (see jni_bridge.cpp)

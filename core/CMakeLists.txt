@@ -38,8 +38,11 @@ add_library(arm64bridge SHARED
   src/jni_bridge.cpp
   src/trampoline.S
   src/zip.cpp
-  src/api.cpp)
+  src/api.cpp
+  src/crash.cpp)
 target_include_directories(arm64bridge PRIVATE src ${unicorn_SOURCE_DIR}/include)
+set(A64B_VERSION "dev" CACHE STRING "Version string reported by the runtime")
+target_compile_definitions(arm64bridge PRIVATE A64B_VERSION="${A64B_VERSION}")
 target_compile_options(arm64bridge PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-format-security
   -Wno-format-nonliteral -U_FORTIFY_SOURCE -fvisibility=hidden -fno-strict-aliasing)
 target_link_libraries(arm64bridge PRIVATE unicorn z)

@@ -756,7 +756,34 @@ bool clear_exception(JNIEnv* env) {
     return true;
 }
 
+jobject g_app_loader = nullptr;
+
+// Finds a class without initialising it. FindClass would run the static initialiser of every
+// class that has a Java_* export, at a moment the app does not expect (during System.loadLibrary).
+jclass find_class_noinit(JNIEnv* env, const std::string& slash_name) {
+    if (g_app_loader) {
+        std::string dotted = slash_name;
+        for (char& ch : dotted)
+            if (ch == '/') ch = '.';
+        jclass class_cls = env->FindClass("java/lang/Class");
+        jmethodID for_name = env->GetStaticMethodID(class_cls, "forName", "(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;");
+        jstring jn = env->NewStringUTF(dotted.c_str());
+        jclass cls = (jclass)env->CallStaticObjectMethod(class_cls, for_name, jn, JNI_FALSE, g_app_loader);
+        env->DeleteLocalRef(jn);
+        env->DeleteLocalRef(class_cls);
+        if (!clear_exception(env) && cls) return cls;
+    }
+    jclass cls = env->FindClass(slash_name.c_str());
+    if (clear_exception(env)) return nullptr;
+    return cls;
+}
+
 }  // namespace
+
+void jni_set_app_class_loader(JNIEnv* env, jobject loader) {
+    if (!loader || g_app_loader) return;
+    g_app_loader = env->NewGlobalRef(loader);
+}
 
 int jni_bind_java_exports(JNIEnv* env, Module* m) {
     std::unordered_map<std::string, std::vector<std::pair<std::string, std::string>>> by_class;  // class -> (method, symbol)
@@ -778,9 +805,9 @@ int jni_bind_java_exports(JNIEnv* env, Module* m) {
     int bound = 0;
 
     for (auto& kv : by_class) {
-        jclass cls = env->FindClass(kv.first.c_str());
-        if (clear_exception(env) || !cls) {
-            LOGD("class %s not found; its native methods stay unbound", kv.first.c_str());
+        jclass cls = find_class_noinit(env, kv.first);
+        if (!cls) {
+            LOGW("class %s not found; its %zu native method(s) stay unbound", kv.first.c_str(), kv.second.size());
             continue;
         }
         jobjectArray methods = (jobjectArray)env->CallObjectMethod(cls, get_methods);
@@ -820,7 +847,10 @@ int jni_bind_java_exports(JNIEnv* env, Module* m) {
             std::string long_sym = short_sym + "__" + jni_mangle(args);
             u32 fn = m->find(long_sym);
             if (!fn) fn = m->find(short_sym);
-            if (!fn) continue;
+            if (!fn) {
+                LOGW("no implementation for native method %s.%s%s", kv.first.c_str(), name.c_str(), sig.c_str());
+                continue;
+            }
             void* tramp = jni_make_trampoline(fn, jni_shorty_from_signature(sig.c_str()), name);
             if (!tramp) continue;
             JNINativeMethod nm = {const_cast<char*>(name.c_str()), const_cast<char*>(sig.c_str()), tramp};

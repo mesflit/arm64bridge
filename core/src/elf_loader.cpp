@@ -507,6 +507,9 @@ u32 loader_lookup(const std::string& sym) {
 
 std::string describe_address(u32 addr) {
     if (const char* t = trap_name_at(addr)) return strfmt("0x%08x <host:%s>", addr, t);
+    // Also used from the crash handler: never wait for a lock another thread may hold forever.
+    std::unique_lock<std::recursive_mutex> lk(g_load_mu, std::try_to_lock);
+    if (!lk.owns_lock()) return strfmt("0x%08x", addr);
     Module* m = loader_module_for(addr);
     if (!m) return strfmt("0x%08x <unknown>", addr);
     std::string best;

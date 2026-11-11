@@ -38,5 +38,7 @@ jint jni_load_library(JNIEnv* env, const std::string& name, std::string* error);
 // Host entry point for a guest native method (see trampoline_*.S).
 void* jni_make_trampoline(u32 guest_fn, const std::string& shorty, const std::string& name);
 std::string jni_shorty_from_signature(const char* sig);
+// Class loader used to look up the app's classes without running their static initialisers.
+void jni_set_app_class_loader(JNIEnv* env, jobject loader);
 
 }  // namespace a64b

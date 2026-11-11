@@ -23,7 +23,7 @@ android {
         ndk { abiFilters += "arm64-v8a" }
         externalNativeBuild {
             cmake {
-                arguments += listOf("-DANDROID_STL=c++_static", "-DCMAKE_BUILD_TYPE=Release")
+                arguments += listOf("-DANDROID_STL=c++_static", "-DCMAKE_BUILD_TYPE=Release", "-DA64B_VERSION=$baseVersion.$buildNumber")
                 targets += listOf("arm64bridge", "a64bshim")
             }
         }

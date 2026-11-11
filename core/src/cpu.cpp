@@ -32,6 +32,7 @@ u32 g_trap_base = 0;
 TrapEntry* g_traps = nullptr;
 std::atomic<u32> g_trap_count{0};
 u32 g_return_trap = 0;
+std::atomic<u8>* g_trap_called = nullptr;
 
 void return_trap(Cpu&, void*) {}
 
@@ -44,6 +45,8 @@ u32 trap_create(const char* name, TrapFn fn, void* ud) {
     return g_trap_base + idx * kStubSize;
 }
 
+const char* trap_name_by_index(u32 idx) { return idx < g_trap_count.load() ? g_traps[idx].name : nullptr; }
+
 const char* trap_name_at(u32 addr) {
     if (addr < g_trap_base || addr >= g_trap_base + kMaxTraps * kStubSize) return nullptr;
     u32 idx = (addr - g_trap_base) / kStubSize;
@@ -54,6 +57,7 @@ bool cpu_global_init() {
     if (g_trap_base) return true;
     if (!mem_init()) return false;
     g_traps = new TrapEntry[kMaxTraps]();
+    g_trap_called = new std::atomic<u8>[kMaxTraps]();
     u32 base = page_alloc(kMaxTraps * kStubSize, true);
     if (!base) return false;
     u32* p = g2h<u32>(base);
@@ -144,6 +148,8 @@ Cpu::Cpu() {
     uc_err e = uc_open(UC_ARCH_ARM, UC_MODE_ARM, &uc);
     if (e != UC_ERR_OK) fatal("uc_open: %s", uc_strerror(e));
     uc_ctl_set_cpu_model(uc, UC_CPU_ARM_MAX);
+    // Unicorn reserves 1 GiB of RWX memory per engine by default; there is one engine per guest thread.
+    uc_ctl_set_tcg_buffer_size(uc, 256u << 20);
     e = uc_mem_map_ptr(uc, mem_arena_base(), mem_arena_size(), UC_PROT_ALL, g2h(mem_arena_base()));
     if (e != UC_ERR_OK) fatal("uc_mem_map_ptr: %s", uc_strerror(e));
     uc_hook hh;
@@ -191,14 +197,28 @@ void Cpu::store_regs(bool all) {
     uc_reg_write_batch(uc, const_cast<int*>(kAllRegs), (void* const*)ptrs, n);
 }
 
-void guest_crash(Cpu& c, const char* why) {
-    LOGE("=== guest crash: %s ===", why);
+void cpu_dump_state(Cpu& c, const char* why) {
+    LOGE("=== %s ===", why);
+    LOGE(" registers at the last guest->host call:");
     LOGE(" r0=%08x r1=%08x r2=%08x r3=%08x", c.r[0], c.r[1], c.r[2], c.r[3]);
     LOGE(" r4=%08x r5=%08x r6=%08x r7=%08x", c.r[4], c.r[5], c.r[6], c.r[7]);
     LOGE(" r8=%08x r9=%08x r10=%08x r11=%08x", c.r[8], c.r[9], c.r[10], c.r[11]);
     LOGE(" ip=%08x sp=%08x lr=%08x pc=%08x cpsr=%08x", c.r[12], c.r[13], c.r[14], c.r[15], c.cpsr);
     LOGE(" pc: %s", describe_address(c.r[15]).c_str());
     LOGE(" lr: %s", describe_address(c.r[14]).c_str());
+    std::string tr;
+    for (u32 i = 0; i < 32; i++) {
+        u32 v = c.trace[(c.trace_pos + i) % 32];
+        if (!v) continue;
+        const char* n = trap_name_by_index(v - 1);
+        tr += n ? n : "?";
+        tr += " ";
+    }
+    LOGE(" last host calls (oldest first): %s", tr.c_str());
+}
+
+void guest_crash(Cpu& c, const char* why) {
+    cpu_dump_state(c, strfmt("guest crash: %s", why).c_str());
     fatal("guest code crashed (%s)", why);
 }
 
@@ -234,6 +254,8 @@ void Cpu::run(u32 pc) {
             regs_dirty = false;
             pc_override = false;
             u32 lr = r[14];
+            trace[trace_pos++ % 32] = idx + 1;
+            if (!g_trap_called[idx].exchange(1, std::memory_order_relaxed)) LOGI("first call: %s", t.name);
             t.fn(*this, t.ud);
             store_regs(regs_dirty);
             pc = pc_override ? r[15] : lr;
