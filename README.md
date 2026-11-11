@@ -59,7 +59,7 @@ dosyanın sonunda hangi 32-bit kodun, hangi sistem fonksiyonunu çağırırken �
 
 - **Hız:** yerel kod JIT ile emüle edilir ve aynı anda tek iş parçacığı misafir kodu yürütür (atomik işlemlerin doğru
   olması için). Basit/2B oyunlar ve araçlar için yeterli olabilir; ağır 3B oyunlar yavaş kalabilir.
-- **Eksik API'ler:** OpenSL ES (yerel ses), `NativeActivity`, sensör/girdi NDK API'leri, ELF TLS, ağ adı çözümleme
+- **Eksik API'ler:** `NativeActivity`, sensör/girdi NDK API'leri, ELF TLS, ağ adı çözümleme
   (`getaddrinfo`) ve OpenGL ES 3 henüz köprülenmedi. İnceleme ekranı eksik fonksiyonları listeler.
 - `System.load()` ile çalışma anında indirilen kütüphaneler ve doğrudan bellek tamponları (`GetDirectBufferAddress`)
   desteklenmiyor.

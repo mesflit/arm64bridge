@@ -197,6 +197,7 @@ void register_android_thunks();
 void register_gles_thunks();
 void register_data_symbols();
 void register_zlib_thunks();
+void register_opensl_thunks();
 void register_posix_extra_thunks();
 // Host-owned strings handed to the guest (cached copies in guest memory).
 u32 guest_intern_string(const char* s);

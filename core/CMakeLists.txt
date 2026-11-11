@@ -56,7 +56,8 @@ add_library(arm64bridge SHARED
   src/api.cpp
   src/crash.cpp
   src/zlib_thunks.cpp
-  src/posix_extra_thunks.cpp)
+  src/posix_extra_thunks.cpp
+  src/opensl_thunks.cpp)
 target_include_directories(arm64bridge PRIVATE src)
 set(A64B_VERSION "dev" CACHE STRING "Version string reported by the runtime")
 target_compile_definitions(arm64bridge PRIVATE A64B_VERSION="${A64B_VERSION}")
@@ -70,7 +71,7 @@ set_target_properties(a64bshim PROPERTIES NO_SONAME ON)
 target_link_libraries(a64bshim PRIVATE arm64bridge)
 
 if(ANDROID)
-  target_link_libraries(arm64bridge PRIVATE log android EGL GLESv2 GLESv1_CM)
+  target_link_libraries(arm64bridge PRIVATE log android EGL GLESv2 GLESv1_CM OpenSLES)
   target_link_options(arm64bridge PRIVATE -Wl,-z,max-page-size=16384)
   target_link_options(a64bshim PRIVATE -Wl,-z,max-page-size=16384)
 else()

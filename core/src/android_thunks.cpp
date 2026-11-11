@@ -105,11 +105,7 @@ void register_android_thunks() {
     });
     reg("__android_log_is_loggable", +[](int, const char*, int) -> int { return 1; });
 
-    // Audio through OpenSL ES is not bridged yet: report "feature unsupported".
-    reg("slCreateEngine", +[](u32*, u32, u32, u32, u32, u32) -> u32 {
-        LOGW("OpenSL ES is not bridged yet; the app will run without native audio");
-        return 12;  // SL_RESULT_FEATURE_UNSUPPORTED
-    });
+    register_opensl_thunks();
 
 #ifdef __ANDROID__
     // ---------------------------------------------------------------- native window
