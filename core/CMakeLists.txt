@@ -19,7 +19,9 @@ set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(unicorn
   GIT_REPOSITORY https://github.com/unicorn-engine/unicorn.git
   GIT_TAG 2.1.4
-  GIT_SHALLOW TRUE)
+  GIT_SHALLOW TRUE
+  PATCH_COMMAND ${CMAKE_COMMAND} -DUNICORN_SRC=<SOURCE_DIR> -P ${CMAKE_CURRENT_LIST_DIR}/cmake/patch_unicorn.cmake
+  UPDATE_DISCONNECTED TRUE)
 FetchContent_MakeAvailable(unicorn)
 
 add_library(arm64bridge SHARED

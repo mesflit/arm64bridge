@@ -70,7 +70,9 @@ public final class GuestDemo {
         check(sb, failed, "libc score " + libc(), libc() == 63);
         int posix = posix();
         check(sb, failed, "zlib / epoll / div_t / wide strings score " + posix, posix == 63);
-        check(sb, failed, "threads", threads(4, 2000) == 8000);
+        long tt = System.nanoTime();
+        int th = threads(4, 50000);
+        check(sb, failed, "4 parallel threads, atomics + spin lock + mutex (" + (System.nanoTime() - tt) / 1000000 + " ms)", th == 200000);
         check(sb, failed, "RegisterNatives", "registered:14:x".equals(new GuestDemo().registered(7, "x")));
         check(sb, failed, "JavaVM.GetEnv", sameEnv());
         long t0 = System.nanoTime();

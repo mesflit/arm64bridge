@@ -148,6 +148,8 @@ JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_primes(JNIEnv* env
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static int g_locked_counter;
 static volatile int g_atomic_counter;
+static volatile int g_spin;            /* LDREX/STREX spin lock */
+static volatile int g_spin_counter;    /* protected only by g_spin */
 
 static void* worker(void* arg) {
     int rounds = (int)(intptr_t)arg;
@@ -156,6 +158,10 @@ static void* worker(void* arg) {
         g_locked_counter++;
         pthread_mutex_unlock(&g_lock);
         __sync_fetch_and_add(&g_atomic_counter, 1);
+        while (__sync_lock_test_and_set(&g_spin, 1)) {
+        }
+        g_spin_counter = g_spin_counter + 1;
+        __sync_lock_release(&g_spin);
     }
     return (void*)(intptr_t)rounds;
 }
@@ -166,6 +172,7 @@ JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_threads(JNIEnv* en
     if (nthreads > 8) nthreads = 8;
     g_locked_counter = 0;
     g_atomic_counter = 0;
+    g_spin_counter = 0;
     for (int i = 0; i < nthreads; i++) pthread_create(&t[i], NULL, worker, (void*)(intptr_t)rounds);
     int joined = 0;
     for (int i = 0; i < nthreads; i++) {
@@ -173,7 +180,7 @@ JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_threads(JNIEnv* en
         pthread_join(t[i], &ret);
         joined += (int)(intptr_t)ret;
     }
-    if (joined != nthreads * rounds || g_atomic_counter != nthreads * rounds) return -1;
+    if (joined != nthreads * rounds || g_atomic_counter != nthreads * rounds || g_spin_counter != nthreads * rounds) return -1;
     return g_locked_counter;
 }
 

@@ -138,7 +138,18 @@ uc_struct* g_gil_owner = nullptr;
 std::atomic<bool> g_yield_request{false};
 thread_local int t_gil_depth = 0;
 
+// Guest threads run truly in parallel (each on its own engine; exclusives are host atomics,
+// see cmake/patch_unicorn.cmake). A64B_GIL=1 brings back the old one-thread-at-a-time mode.
+bool use_gil() {
+    static const bool on = [] {
+        const char* e = getenv("A64B_GIL");
+        return e && *e == '1';
+    }();
+    return on;
+}
+
 void gil_lock_raw(Cpu* c) {
+    if (!use_gil()) return;
     std::unique_lock<std::mutex> lk(g_gil_mu);
     u64 my = g_next_ticket++;
     while (g_serving != my) {
@@ -157,6 +168,7 @@ void gil_lock_raw(Cpu* c) {
 }
 
 void gil_unlock_raw() {
+    if (!use_gil()) return;
     {
         std::lock_guard<std::mutex> lk(g_gil_mu);
         g_gil_owner = nullptr;
@@ -242,8 +254,12 @@ static thread_local CpuHolder t_cpu;
 Cpu& Cpu::current() { return *t_cpu.get(); }
 Cpu* Cpu::current_or_null() { return t_cpu.cpu; }
 
+// Engines are created and destroyed one at a time; only running them is concurrent.
+static std::mutex g_engine_mu;
+
 Cpu::Cpu() {
     if (!cpu_global_init()) fatal("bridge initialisation failed");
+    std::lock_guard<std::mutex> engine_lock(g_engine_mu);
     uc_err e = uc_open(UC_ARCH_ARM, UC_MODE_ARM, &uc);
     if (e != UC_ERR_OK) fatal("uc_open: %s", uc_strerror(e));
     uc_ctl_set_cpu_model(uc, UC_CPU_ARM_MAX);
@@ -276,7 +292,10 @@ Cpu::Cpu() {
 }
 
 Cpu::~Cpu() {
-    if (uc) uc_close(uc);
+    if (uc) {
+        std::lock_guard<std::mutex> engine_lock(g_engine_mu);
+        uc_close(uc);
+    }
     if (stack_base) page_free(stack_base, stack_size);
     if (tls_block) g_free(tls_block);
 }
