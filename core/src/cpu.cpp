@@ -7,6 +7,10 @@
 #include <dynarmic/interface/A32/coprocessor.h>
 #include <dynarmic/interface/exclusive_monitor.h>
 
+#include <time.h>
+#include <unistd.h>
+
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <mutex>
@@ -15,11 +19,42 @@
 
 namespace a64b {
 
-std::atomic<u64> g_guest_host_calls{0};
 std::atomic<u64> g_frames{0};
 std::atomic<int> g_guest_threads{0};
 std::atomic<int> g_render_tid{0};
 std::atomic<int> g_frame_limiter{0};
+
+namespace {
+std::mutex g_cpus_mu;
+std::vector<Cpu*> g_cpus;
+
+inline u64 ticks() {
+#if defined(__aarch64__)
+    u64 v;
+    __asm__ volatile("mrs %0, cntvct_el0" : "=r"(v));
+    return v;
+#elif defined(__x86_64__)
+    return __builtin_ia32_rdtsc();
+#else
+    timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (u64)ts.tv_sec * 1000000000ull + ts.tv_nsec;
+#endif
+}
+
+double ticks_per_second() {
+    static const double f = [] {
+        timespec a, b;
+        clock_gettime(CLOCK_MONOTONIC, &a);
+        u64 t0 = ticks();
+        do clock_gettime(CLOCK_MONOTONIC, &b);
+        while ((b.tv_sec - a.tv_sec) * 1000000000ll + (b.tv_nsec - a.tv_nsec) < 20000000ll);
+        u64 t1 = ticks();
+        return (double)(t1 - t0) / (((b.tv_sec - a.tv_sec) * 1000000000ll + (b.tv_nsec - a.tv_nsec)) / 1e9);
+    }();
+    return f;
+}
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // Trap stubs. Slot i is "svc #(i+1); bx lr" (ARM mode): the SVC number selects the
@@ -118,6 +153,17 @@ bool cpu_global_init() {
 // ---------------------------------------------------------------------------
 namespace {
 
+template <class T>
+bool set_fastmem_base0(T& field) {
+    if constexpr (std::is_pointer_v<T>) {
+        (void)field;
+        return false;
+    } else {
+        field = 0;
+        return true;
+    }
+}
+
 // CP15: only the user-space thread ID registers exist.
 class Cp15 final : public Dynarmic::A32::Coprocessor {
   public:
@@ -156,7 +202,14 @@ struct CpuLevel final : Dynarmic::A32::UserCallbacks {
         cfg.callbacks = this;
         cfg.processor_id = pid;
         cfg.global_monitor = g_monitor;
-        cfg.page_table = g_page_table;
+        // Guest address == host address, so a memory access can be a single host instruction
+        // (fastmem with base 0). Older dynarmic versions cannot express base 0; they use the
+        // identity page table instead.
+        if (!set_fastmem_base0(cfg.fastmem_pointer)) cfg.page_table = g_page_table;
+        // Games do not depend on exact NaN payloads or FMA fusing; these make VFP/NEON code cheaper.
+        cfg.unsafe_optimizations = true;
+        cfg.optimizations |= Dynarmic::OptimizationFlag::Unsafe_UnfuseFMA | Dynarmic::OptimizationFlag::Unsafe_InaccurateNaN |
+                             Dynarmic::OptimizationFlag::Unsafe_IgnoreStandardFPCRValue;
         cfg.coprocessors[15] = std::make_shared<Cp15>(&c.tls_block);
         cfg.enable_cycle_counting = false;
         cfg.code_cache_size = code_cache;
@@ -250,9 +303,18 @@ Cpu::Cpu() {
     if (!stack_base || !tls_block) fatal("cannot allocate guest thread state");
     idle_regs[13] = stack_base + stack_size - 64;
     epoch = mem_code_epoch();
+    tid = (int)gettid();
+    prof_count.assign(kMaxTraps, 0);
+    prof_ticks.assign(kMaxTraps, 0);
+    std::lock_guard<std::mutex> lk(g_cpus_mu);
+    g_cpus.push_back(this);
 }
 
 Cpu::~Cpu() {
+    {
+        std::lock_guard<std::mutex> lk(g_cpus_mu);
+        g_cpus.erase(std::remove(g_cpus.begin(), g_cpus.end(), this), g_cpus.end());
+    }
     for (CpuLevel* l : levels) delete l;
     if (stack_base) page_free(stack_base, stack_size);
     // tls_block may have been replaced by the guest (set_tls); the original allocation is small, leak it.
@@ -263,6 +325,64 @@ void Cpu::sync_errno() { *g2h<i32>(errno_addr) = errno; }
 u32* Cpu::ext_regs() {
     if (depth <= 0) return nullptr;
     return levels[depth - 1]->jit->ExtRegs().data();
+}
+
+u64 cpu_total_host_calls() {
+    std::lock_guard<std::mutex> lk(g_cpus_mu);
+    u64 n = 0;
+    for (Cpu* c : g_cpus) n += c->host_calls;
+    return n;
+}
+
+std::string cpu_profile_report(int tid, double seconds) {
+    static int last_tid = 0;
+    static std::vector<u32> last_count;
+    static std::vector<u64> last_ticks;
+    std::vector<u32> count;
+    std::vector<u64> tk;
+    {
+        std::lock_guard<std::mutex> lk(g_cpus_mu);
+        for (Cpu* c : g_cpus)
+            if (c->tid == tid) {
+                count = c->prof_count;  // racy snapshot of another thread's counters; good enough for statistics
+                tk = c->prof_ticks;
+            }
+    }
+    if (count.empty()) return "";
+    if (last_tid != tid || last_count.size() != count.size()) {
+        last_tid = tid;
+        last_count = count;
+        last_ticks = tk;
+        return "";
+    }
+    struct Row { u32 idx; u64 n; u64 t; };
+    std::vector<Row> rows;
+    u64 total_n = 0, total_t = 0;
+    for (u32 i = 0; i < count.size(); i++) {
+        u64 n = count[i] - last_count[i], t = tk[i] - last_ticks[i];
+        if (!n) continue;
+        rows.push_back(Row{i, n, t});
+        total_n += n;
+        total_t += t;
+    }
+    last_count = count;
+    last_ticks = tk;
+    if (rows.empty() || seconds <= 0) return "";
+    const double tps = ticks_per_second();
+    std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) { return a.t > b.t; });
+    std::string out = strfmt("host functions take %.0f%% of the render thread (%llu calls/s); by time:", total_t / tps / seconds * 100.0,
+                             (unsigned long long)(total_n / seconds));
+    for (size_t i = 0; i < rows.size() && i < 12; i++) {
+        const char* n = trap_name_by_index(rows[i].idx);
+        out += strfmt(" %s %.1f%% x%llu/s;", n ? n : "?", rows[i].t / tps / seconds * 100.0, (unsigned long long)(rows[i].n / seconds));
+    }
+    std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) { return a.n > b.n; });
+    out += " by count:";
+    for (size_t i = 0; i < rows.size() && i < 8; i++) {
+        const char* n = trap_name_by_index(rows[i].idx);
+        out += strfmt(" %s x%llu/s;", n ? n : "?", (unsigned long long)(rows[i].n / seconds));
+    }
+    return out;
 }
 
 void cpu_dump_state(Cpu& c, const char* why, bool at_fault) {
@@ -346,11 +466,18 @@ void Cpu::on_svc(u32 swi) {
         if (idx >= g_trap_count.load(std::memory_order_acquire) || !g_traps[idx].fn) guest_crash(*this, "call through an unassigned trap slot");
         TrapEntry& t = g_traps[idx];
         trace[trace_pos++ % 32] = idx + 1;
-        g_guest_host_calls.fetch_add(1, std::memory_order_relaxed);
+        host_calls++;
         if (!g_trap_called[idx].load(std::memory_order_relaxed) && !g_trap_called[idx].exchange(1)) LOGI("first call: %s", t.name);
         pc_override = false;
         try {
-            t.fn(*this, t.ud);
+            prof_count[idx]++;
+            if ((host_calls & 15) == 0) {  // time one call in 16: reading the clock costs as much as a cheap call
+                const u64 t0 = ticks();
+                t.fn(*this, t.ud);
+                prof_ticks[idx] += (ticks() - t0) * 16;
+            } else {
+                t.fn(*this, t.ud);
+            }
         } catch (const ThreadExit& e) {
             // C++ exceptions cannot unwind through translated code: leave the JIT first.
             exit_pending = true;

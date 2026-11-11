@@ -54,6 +54,11 @@ struct Cpu {
     // Most recent host functions called by guest code on this thread (ring buffer of trap slots).
     u32 trace[32] = {};
     u32 trace_pos = 0;
+    // Profile of guest->host calls made by this thread (per trap slot), read by the heartbeat.
+    int tid = 0;
+    u64 host_calls = 0;
+    std::vector<u32> prof_count;
+    std::vector<u64> prof_ticks;
     u32 tls_values[256] = {};
 
     // JNI local reference tokens (see jni_bridge.cpp)
@@ -92,7 +97,10 @@ struct Cpu {
 };
 
 bool cpu_global_init();
-extern std::atomic<u64> g_guest_host_calls;
+// Total guest->host calls of all threads.
+u64 cpu_total_host_calls();
+// What the given thread spent its time on since the previous call (host functions by time).
+std::string cpu_profile_report(int tid, double seconds);
 extern std::atomic<u64> g_frames;
 extern std::atomic<int> g_guest_threads;
 // 0 = leave the game's frame limiter alone, 1 = halve its sleeps, 2 = skip them (render thread only).

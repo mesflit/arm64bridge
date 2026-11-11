@@ -191,7 +191,7 @@ void open_log_file(JNIEnv* env) {
             const long hz = sysconf(_SC_CLK_TCK) > 0 ? sysconf(_SC_CLK_TCK) : 100;
             for (;;) {
                 std::this_thread::sleep_for(std::chrono::seconds(5));
-                u64 f = g_frames.load(), k = g_guest_host_calls.load();
+                u64 f = g_frames.load(), k = cpu_total_host_calls();
                 // How busy the render thread and the whole process are: a render thread at ~100%
                 // means the frame rate is limited by how fast guest code is emulated.
                 int tid = g_render_tid.load();
@@ -214,6 +214,10 @@ void open_log_file(JNIEnv* env) {
                 LOGI("heartbeat: %.1f fps, render thread CPU %d%%, process CPU %d%%, %llu guest->host calls/s, %d guest threads; Java->native: %s",
                      (f - last_frames) / 5.0, render_pct, proc_pct, (unsigned long long)((k - last_calls) / 5),
                      g_guest_threads.load(), jni_call_stats().c_str());
+                if (tid) {
+                    std::string prof = cpu_profile_report(tid, 5.0);
+                    if (!prof.empty()) LOGI("profile: %s", prof.c_str());
+                }
                 last_tid = tid;
                 last_ticks = ticks;
                 last_proc = proc;
