@@ -19,6 +19,7 @@ std::atomic<u64> g_guest_host_calls{0};
 std::atomic<u64> g_frames{0};
 std::atomic<int> g_guest_threads{0};
 std::atomic<int> g_render_tid{0};
+std::atomic<int> g_frame_limiter{0};
 
 // ---------------------------------------------------------------------------
 // Trap stubs. Slot i is "svc #(i+1); bx lr" (ARM mode): the SVC number selects the

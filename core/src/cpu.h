@@ -95,6 +95,8 @@ bool cpu_global_init();
 extern std::atomic<u64> g_guest_host_calls;
 extern std::atomic<u64> g_frames;
 extern std::atomic<int> g_guest_threads;
+// 0 = leave the game's frame limiter alone, 1 = halve its sleeps, 2 = skip them (render thread only).
+extern std::atomic<int> g_frame_limiter;
 extern std::atomic<int> g_render_tid;  // thread that last called eglSwapBuffers
 [[noreturn]] void guest_crash(Cpu& c, const char* why);
 // Implemented by the loader: "libfoo.so+0x1234 (symbol)".

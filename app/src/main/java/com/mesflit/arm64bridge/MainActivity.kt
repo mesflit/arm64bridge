@@ -27,6 +27,7 @@ class MainActivity : Activity() {
     private lateinit var saveButton: Button
     private lateinit var raiseTarget: CheckBox
     private lateinit var legacyScaling: CheckBox
+    private lateinit var inGameMenu: CheckBox
 
     private val inputApk get() = File(cacheDir, "input.apk")
     private val patchedApk get() = File(cacheDir, "patched.apk")
@@ -43,6 +44,7 @@ class MainActivity : Activity() {
         saveButton = view(R.id.saveButton)
         raiseTarget = view(R.id.raiseTargetSdk)
         legacyScaling = view(R.id.legacyScaling)
+        inGameMenu = view(R.id.inGameMenu)
 
         val abis = Build.SUPPORTED_ABIS.joinToString(", ")
         val native32 = Build.SUPPORTED_32_BIT_ABIS.isNotEmpty()
@@ -150,6 +152,8 @@ class MainActivity : Activity() {
         raiseTarget.text = getString(R.string.raise_target_sdk, floor)
         legacyScaling.visibility = if (a.patchable) View.VISIBLE else View.GONE
         legacyScaling.isChecked = false
+        inGameMenu.visibility = if (a.patchable) View.VISIBLE else View.GONE
+        inGameMenu.isChecked = false
         updateButtons()
     }
 
@@ -175,7 +179,8 @@ class MainActivity : Activity() {
         if (analysis?.patchable != true) return
         val options = ApkPatcher.Options(
             if (raiseTarget.isChecked && raiseTarget.visibility == View.VISIBLE) ApkPatcher.minInstallableTargetSdk() else null,
-            legacyScaling.isChecked && legacyScaling.visibility == View.VISIBLE
+            legacyScaling.isChecked && legacyScaling.visibility == View.VISIBLE,
+            inGameMenu.isChecked && inGameMenu.visibility == View.VISIBLE
         )
         setBusy(true)
         progress.isIndeterminate = false

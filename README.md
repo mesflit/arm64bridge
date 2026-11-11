@@ -42,6 +42,10 @@ Options shown when applicable:
 - **Low-resolution rendering** (optional): runs the app in Android's screen compatibility mode
   (`anyDensity="false"`). Use it for very old games that draw tiny graphics on a modern high-resolution screen.
 
+- **In-game menu** (optional): adds a small floating button inside the game (no overlay permission needed).
+  It shows the frame rate and can relax or switch off the game's own frame limiter. If a game ties its speed to
+  the frame rate it will run too fast with the limiter off; switch it back in the same menu.
+
 Notes:
 
 - The patched APK is re-signed with a key generated on the device. Anything tied to the original signature

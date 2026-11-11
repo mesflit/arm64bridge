@@ -136,6 +136,15 @@ void do_mmap(Cpu& c, i64 offset_bytes, u32 addr, u32 len, int prot, int flags, i
     c.set_ret32(res);
 }
 
+// The in-game menu can relax the game's own frame limiter: sleeps of the thread that presents
+// frames are shortened or skipped.
+int limiter_mode_for_this_thread() {
+    int mode = g_frame_limiter.load(std::memory_order_relaxed);
+    if (!mode) return 0;
+    static thread_local int tid = (int)syscall(SYS_gettid);
+    return tid == g_render_tid.load(std::memory_order_relaxed) ? mode : 0;
+}
+
 template <class F>
 void with_strto_end(Cpu& c, F f) {
     ArgReader a(c);
@@ -466,6 +475,12 @@ void register_libc_thunks() {
     reg("clock", +[]() -> u32 { return (u32)clock(); });
     reg("nanosleep", +[](const GTimespec* req, GTimespec* rem) -> int {
         timespec h = from_guest(req), hr = {};
+        if (int mode = limiter_mode_for_this_thread()) {
+            if (mode == 2) { if (rem) to_guest(rem, hr); return 0; }
+            long long ns = (h.tv_sec * 1000000000ll + h.tv_nsec) / 2;
+            h.tv_sec = ns / 1000000000ll;
+            h.tv_nsec = ns % 1000000000ll;
+        }
         int r = nanosleep(&h, &hr);
         if (rem) to_guest(rem, hr);
         return r;
@@ -476,7 +491,13 @@ void register_libc_thunks() {
         if (rem) to_guest(rem, hr);
         return r;
     });
-    reg("usleep", +[](u32 us) -> int { return usleep(us); });
+    reg("usleep", +[](u32 us) -> int {
+        if (int mode = limiter_mode_for_this_thread()) {
+            if (mode == 2) return 0;
+            us /= 2;
+        }
+        return usleep(us);
+    });
     reg("sleep", +[](u32 s) -> u32 { return sleep(s); });
     auto tm_conv = +[](const i32* t, GTm* out, int local) -> u32 {
         time_t tt = *t;

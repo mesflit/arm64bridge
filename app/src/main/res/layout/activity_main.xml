@@ -48,6 +48,14 @@
             android:text="@string/legacy_scaling"
             android:visibility="gone" />
 
+        <CheckBox
+            android:id="@+id/inGameMenu"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/in_game_menu"
+            android:visibility="gone" />
+
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

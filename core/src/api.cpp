@@ -48,9 +48,12 @@ void add_guest_dir(const std::string& dir) {
     loader_add_provider([dir](const std::string& name, std::vector<u8>& out) { return read_file(dir + "/" + name, out); });
 }
 
+std::string g_apk_path;
+
 void add_guest_apk(const std::string& apk) {
     std::lock_guard<std::mutex> lk(g_provider_mu);
     if (!g_sources.insert("apk:" + apk).second) return;
+    if (g_apk_path.empty()) g_apk_path = apk;
     LOGI("guest libraries from APK: %s", apk.c_str());
     loader_add_provider([apk](const std::string& name, std::vector<u8>& out) {
         return zip_extract(apk, "lib/armeabi-v7a/" + name, out) || zip_extract(apk, "lib/armeabi/" + name, out);
@@ -243,6 +246,83 @@ long long thread_cpu_ticks(int tid) {
     return (long long)(ut + st);
 }
 
+// ---- in-game menu (com.mesflit.arm64bridge.overlay.GameOverlay, loaded from the patched APK) ----
+void JNICALL overlay_set_limiter(JNIEnv*, jclass, jint mode) {
+    g_frame_limiter.store(mode < 0 || mode > 2 ? 0 : mode);
+    LOGI("in-game menu: frame limiter mode %d", (int)mode);
+}
+
+jfloat JNICALL overlay_fps(JNIEnv*, jclass) {
+    static u64 last_frames = 0;
+    static auto last_time = std::chrono::steady_clock::now();
+    auto now = std::chrono::steady_clock::now();
+    u64 frames = g_frames.load();
+    double dt = std::chrono::duration<double>(now - last_time).count();
+    float fps = (frames == 0 || dt <= 0) ? -1.0f : (float)((frames - last_frames) / dt);
+    last_frames = frames;
+    last_time = now;
+    return fps;
+}
+
+// The patcher puts the dex of the ARM64Bridge app into assets/arm64bridge/ when the menu is wanted.
+void load_overlay(JNIEnv* env) {
+    static std::once_flag once;
+    std::call_once(once, [env] {
+        if (g_apk_path.empty()) return;
+        static std::vector<std::vector<u8>*> dexes;  // must stay alive: the class loader maps them
+        for (int i = 1; i <= 16; i++) {
+            auto* data = new std::vector<u8>();
+            std::string name = i == 1 ? "classes.dex" : "classes" + std::to_string(i) + ".dex";
+            if (!zip_extract(g_apk_path, "assets/arm64bridge/" + name, *data)) {
+                delete data;
+                break;
+            }
+            dexes.push_back(data);
+        }
+        if (dexes.empty()) return;
+        jobject app = current_application(env);
+        jclass bb_cls = env->FindClass("java/nio/ByteBuffer");
+        jclass cl_cls = env->FindClass("java/lang/ClassLoader");
+        jclass im_cls = env->FindClass("dalvik/system/InMemoryDexClassLoader");
+        if (clear_exc(env) || !app || !bb_cls || !cl_cls || !im_cls) {
+            LOGW("in-game menu: not available on this Android version");
+            return;
+        }
+        jobjectArray buffers = env->NewObjectArray((jsize)dexes.size(), bb_cls, nullptr);
+        for (size_t i = 0; i < dexes.size(); i++) {
+            jobject b = env->NewDirectByteBuffer(dexes[i]->data(), (jlong)dexes[i]->size());
+            env->SetObjectArrayElement(buffers, (jsize)i, b);
+            env->DeleteLocalRef(b);
+        }
+        jobject parent = env->CallStaticObjectMethod(cl_cls, env->GetStaticMethodID(cl_cls, "getSystemClassLoader", "()Ljava/lang/ClassLoader;"));
+        jmethodID ctor = env->GetMethodID(im_cls, "<init>", "([Ljava/nio/ByteBuffer;Ljava/lang/ClassLoader;)V");
+        jobject loader = (!clear_exc(env) && ctor) ? env->NewObject(im_cls, ctor, buffers, parent) : nullptr;
+        if (clear_exc(env) || !loader) {
+            LOGW("in-game menu: could not load the menu code");
+            return;
+        }
+        jstring cname = env->NewStringUTF("com.mesflit.arm64bridge.overlay.GameOverlay");
+        jclass overlay = (jclass)env->CallObjectMethod(loader, env->GetMethodID(cl_cls, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;"), cname);
+        if (clear_exc(env) || !overlay) {
+            LOGW("in-game menu: menu class not found");
+            return;
+        }
+        env->NewGlobalRef(loader);
+        overlay = (jclass)env->NewGlobalRef(overlay);
+        const JNINativeMethod natives[] = {{const_cast<char*>("nativeSetLimiter"), const_cast<char*>("(I)V"), (void*)overlay_set_limiter},
+                                           {const_cast<char*>("nativeFps"), const_cast<char*>("()F"), (void*)overlay_fps}};
+        jmethodID install = env->GetStaticMethodID(overlay, "install", "(Landroid/app/Application;)V");
+        if (env->RegisterNatives(overlay, natives, 2) != JNI_OK || clear_exc(env) || !install) {
+            clear_exc(env);
+            LOGW("in-game menu: could not bind the menu");
+            return;
+        }
+        env->CallStaticVoidMethod(overlay, install, app);
+        if (clear_exc(env)) LOGW("in-game menu: installation failed");
+        else LOGI("in-game menu installed");
+    });
+}
+
 std::string jstr(JNIEnv* env, jstring s) {
     if (!s) return "";
     const char* c = env->GetStringUTFChars(s, nullptr);
@@ -279,6 +359,7 @@ A64B_EXPORT jint a64b_shim_load(JavaVM* vm, const char* shim_path) {
         std::string candidate = dir + "/../../base.apk";
         if (realpath(candidate.c_str(), real) && access(real, R_OK) == 0) add_guest_apk(real);
     }
+    load_overlay(env);
     std::string error;
     jint v = jni_load_library(env, name, &error);
     LOGI("%s: load finished (%s)", name.c_str(), v == JNI_ERR ? "FAILED" : "ok");

@@ -5,6 +5,7 @@
     <string name="no_apk">No APK selected. Pick the APK of a 32-bit-only app (for example an old game) to make it installable on this 64-bit-only device.</string>
     <string name="raise_target_sdk">Raise targetSdkVersion to %1$d (required by this Android version to install the app)</string>
     <string name="legacy_scaling">Low-resolution rendering (optional): run the app in Android\'s screen compatibility mode. Use this for very old games whose graphics and buttons look tiny on this screen.</string>
+    <string name="in_game_menu">In-game menu (optional): a small floating button inside the game that shows the frame rate and can relax or switch off the game\'s own frame limiter.</string>
     <string name="patch_install">Patch &amp; install</string>
     <string name="patch_save">Patch &amp; save…</string>
     <string name="self_test">Run bridge self test (bundled 32-bit ARM code)</string>

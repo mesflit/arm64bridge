@@ -45,7 +45,7 @@ class ApkPatcher(private val context: Context) {
         val patchable get() = guestAbi != null && !has64
     }
 
-    class Options(val raiseTargetSdkTo: Int?, val legacyScreenScaling: Boolean = false)
+    class Options(val raiseTargetSdkTo: Int?, val legacyScreenScaling: Boolean = false, val inGameMenu: Boolean = false)
 
     fun analyze(apk: File): Analysis {
         ZipFile(apk).use { zip ->
@@ -106,7 +106,7 @@ class ApkPatcher(private val context: Context) {
                         progress(index * 80 / entries.size.coerceAtLeast(1))
                         val name = entry.name
                         if (entry.isDirectory || !seen.add(name)) continue
-                        if (isSignatureFile(name) || name.startsWith("lib/arm64-v8a/")) continue
+                        if (isSignatureFile(name) || name.startsWith("lib/arm64-v8a/") || name.startsWith(MENU_ASSETS)) continue
                         if (name == "AndroidManifest.xml" && (options.raiseTargetSdkTo != null || options.legacyScreenScaling)) {
                             var manifest = zip.getInputStream(entry).use { it.readBytes() }
                             if (options.raiseTargetSdkTo != null) {
@@ -135,6 +135,14 @@ class ApkPatcher(private val context: Context) {
                             out.putNextEntry(e)
                             zip.getInputStream(entry).use { it.copyTo(out, 1 shl 16) }
                             out.closeEntry()
+                        }
+                    }
+                    if (options.inGameMenu) {
+                        // The in-game menu is a class of this app; the runtime loads it from these copies of our dex.
+                        ZipFile(context.applicationInfo.sourceDir).use { self ->
+                            for (dex in self.entries().asSequence().filter { it.name.matches(Regex("classes\\d*\\.dex")) }) {
+                                writeDeflated(out, MENU_ASSETS + dex.name, self.getInputStream(dex).use { it.readBytes() })
+                            }
                         }
                     }
                     // The bridge runtime plus one shim per original library.
@@ -240,6 +248,7 @@ class ApkPatcher(private val context: Context) {
 
     companion object {
         private const val KEY_ALIAS = "arm64bridge-apk-signing"
+        private const val MENU_ASSETS = "assets/arm64bridge/"
         private const val MAX_IN_MEMORY = 8L * 1024 * 1024
         private const val FIXED_TIME = 1230768000000L // 2009-01-01, keeps output reproducible
 
