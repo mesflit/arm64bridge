@@ -213,7 +213,7 @@ void open_log_file(JNIEnv* env) {
                 int render_pct = (tid && tid == last_tid && ticks >= 0) ? (int)((ticks - last_ticks) * 100 / (5 * hz)) : -1;
                 int proc_pct = last_proc ? (int)((proc - last_proc) * 100 / (5 * hz)) : -1;
                 LOGI("heartbeat: %.1f fps, render thread CPU %d%% (core %d), process CPU %d%%, %llu guest->host calls/s, %d guest threads; Java->native: %s",
-                     (f - last_frames) / 5.0, render_pct, tid ? thread_cpu_core(tid) : -1, proc_pct, (unsigned long long)((k - last_calls) / 5),
+                     (f - last_frames) / 5.0, render_pct, tid ? thread_cpu_core(tid) : -1, proc_pct, (unsigned long long)(k >= last_calls ? (k - last_calls) / 5 : 0),  // the total drops when threads end
                      g_guest_threads.load(), jni_call_stats().c_str());
                 if (tid) {
                     std::string prof = cpu_profile_report(tid, 5.0);
@@ -278,6 +278,8 @@ void JNICALL overlay_set_limiter(JNIEnv*, jclass, jint mode) {
     LOGI("in-game menu: frame limiter mode %d", (int)mode);
 }
 
+jstring JNICALL overlay_version(JNIEnv* env, jclass) { return env->NewStringUTF(A64B_VERSION); }
+
 jfloat JNICALL overlay_fps(JNIEnv*, jclass) {
     static u64 last_frames = 0;
     static auto last_time = std::chrono::steady_clock::now();
@@ -336,13 +338,14 @@ void load_overlay(JNIEnv* env) {
         env->NewGlobalRef(loader);
         overlay = (jclass)env->NewGlobalRef(overlay);
         const JNINativeMethod natives[] = {{const_cast<char*>("nativeSetLimiter"), const_cast<char*>("(I)V"), (void*)overlay_set_limiter},
-                                           {const_cast<char*>("nativeFps"), const_cast<char*>("()F"), (void*)overlay_fps}};
+                                           {const_cast<char*>("nativeFps"), const_cast<char*>("()F"), (void*)overlay_fps},
+                                           {const_cast<char*>("nativeVersion"), const_cast<char*>("()Ljava/lang/String;"), (void*)overlay_version}};
         // The FPS booster controls are an option of the patcher (marker file in the APK).
         std::vector<u8> marker;
         bool booster = zip_extract(g_apk_path, "assets/arm64bridge/fps-booster", marker);
         if (!booster) g_frame_limiter.store(0);
         jmethodID install = env->GetStaticMethodID(overlay, "install", "(Landroid/app/Application;Z)V");
-        if (env->RegisterNatives(overlay, natives, 2) != JNI_OK || clear_exc(env) || !install) {
+        if (env->RegisterNatives(overlay, natives, 3) != JNI_OK || clear_exc(env) || !install) {
             clear_exc(env);
             LOGW("in-game menu: could not bind the menu");
             return;

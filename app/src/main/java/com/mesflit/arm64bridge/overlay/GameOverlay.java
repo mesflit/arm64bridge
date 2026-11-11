@@ -39,6 +39,8 @@ public final class GameOverlay implements Application.ActivityLifecycleCallbacks
     private static native void nativeSetLimiter(int mode);
     /** Frames per second drawn through the bridge since the previous call, or a negative value if unknown. */
     private static native float nativeFps();
+    /** Version of the ARM64Bridge runtime in this app. */
+    private static native String nativeVersion();
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private int limiter;
@@ -90,7 +92,13 @@ public final class GameOverlay implements Application.ActivityLifecycleCallbacks
         final TextView limiterButton = label(activity, LIMITER_LABELS[limiter], dp);
         final TextView note = label(activity, "Raises the game's own frame limit. If the game runs too fast or stutters, switch back to off.", dp);
         note.setTextSize(10);
-        final TextView about = label(activity, "ARM64Bridge · hold the icon to open the project page", dp);
+        String version;
+        try {
+            version = nativeVersion();
+        } catch (Throwable t) {
+            version = "?";
+        }
+        final TextView about = label(activity, "ARM64Bridge " + version + " · hold the icon to open the project page", dp);
         about.setTextSize(10);
         LinearLayout.LayoutParams row = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
