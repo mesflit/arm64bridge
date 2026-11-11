@@ -82,6 +82,7 @@ bool cpu_global_init();
 extern std::atomic<u64> g_guest_host_calls;
 extern std::atomic<u64> g_frames;
 extern std::atomic<int> g_guest_threads;
+extern std::atomic<u64> g_gil_switches;
 [[noreturn]] void guest_crash(Cpu& c, const char* why);
 // Implemented by the loader: "libfoo.so+0x1234 (symbol)".
 std::string describe_address(u32 addr);
@@ -90,5 +91,20 @@ std::string describe_address(u32 addr);
 // guest atomics (LDREX/STREX) behave correctly. Released while in host handlers.
 void gil_acquire(Cpu* c);
 void gil_release();
+// Fully drops the GIL (whatever the nesting depth) and returns the depth to restore.
+int gil_release_all();
+void gil_restore(int depth, Cpu* c);
+// Lets another guest thread run if one asked for a turn.
+void gil_maybe_yield(Cpu* c);
+
+// Drops the GIL for the lifetime of the object (around host calls that may block).
+struct GilUnlock {
+    int depth;
+    Cpu* cpu;
+    explicit GilUnlock(Cpu* c) : depth(gil_release_all()), cpu(c) {}
+    ~GilUnlock() { gil_restore(depth, cpu); }
+    GilUnlock(const GilUnlock&) = delete;
+    GilUnlock& operator=(const GilUnlock&) = delete;
+};
 
 }  // namespace a64b

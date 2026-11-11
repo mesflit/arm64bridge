@@ -14,6 +14,7 @@
 #include <android/log.h>
 #include <android/native_window.h>
 #include <android/native_window_jni.h>
+#include <android/configuration.h>
 #include <android/looper.h>
 #include <android/sensor.h>
 #endif
@@ -214,6 +215,28 @@ void register_android_thunks() {
         g_asset_buffers[as] = g;
         return g;
     });
+
+    // ---------------------------------------------------------------- configuration
+    reg("AConfiguration_new", +[]() -> u32 { return ptr_token(AConfiguration_new()); });
+    reg("AConfiguration_delete", +[](u32 c) {
+        if (auto* p = (AConfiguration*)ptr_host(c)) {
+            AConfiguration_delete(p);
+            ptr_drop(c);
+        }
+    });
+    reg("AConfiguration_fromAssetManager", +[](u32 c, u32 mgr) {
+        auto* p = (AConfiguration*)ptr_host(c);
+        auto* m = (AAssetManager*)ptr_host(mgr);
+        if (p && m) AConfiguration_fromAssetManager(p, m);
+    });
+    reg("AConfiguration_getLanguage", +[](u32 c, char* out) { if (auto* p = (AConfiguration*)ptr_host(c)) AConfiguration_getLanguage(p, out); });
+    reg("AConfiguration_getCountry", +[](u32 c, char* out) { if (auto* p = (AConfiguration*)ptr_host(c)) AConfiguration_getCountry(p, out); });
+#define ACFG(name) reg("AConfiguration_" #name, +[](u32 c) -> int { auto* p = (AConfiguration*)ptr_host(c); return p ? (int)AConfiguration_##name(p) : 0; });
+    ACFG(getMcc) ACFG(getMnc) ACFG(getOrientation) ACFG(getTouchscreen) ACFG(getDensity) ACFG(getKeyboard)
+    ACFG(getNavigation) ACFG(getKeysHidden) ACFG(getNavHidden) ACFG(getSdkVersion) ACFG(getScreenSize)
+    ACFG(getScreenLong) ACFG(getUiModeType) ACFG(getUiModeNight) ACFG(getScreenWidthDp) ACFG(getScreenHeightDp)
+    ACFG(getSmallestScreenWidthDp) ACFG(getLayoutDirection)
+#undef ACFG
 
     // ---------------------------------------------------------------- loopers and sensors
     reg("ALooper_prepare", +[](int opts) -> u32 { return ptr_token(ALooper_prepare(opts)); });

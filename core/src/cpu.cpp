@@ -7,6 +7,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
+#include <string_view>
 
 #include "syscalls.h"
 
@@ -15,6 +16,7 @@ namespace a64b {
 std::atomic<u64> g_guest_host_calls{0};
 std::atomic<u64> g_frames{0};
 std::atomic<int> g_guest_threads{0};
+std::atomic<u64> g_gil_switches{0};
 
 // ---------------------------------------------------------------------------
 // Trap stubs.  Every slot is "svc #0; bx lr" (ARM mode). The slot index selects
@@ -30,7 +32,55 @@ struct TrapEntry {
     TrapFn fn;
     void* ud;
     const char* name;
+    bool fast;  // never waits for another guest thread: runs without dropping the GIL
 };
+
+// Host functions that cannot wait for another guest thread. Everything else drops the
+// GIL while it runs, so that a blocking call never stalls the other guest threads.
+bool is_fast_trap(const char* name) {
+    std::string_view s(name);
+    auto starts = [&](const char* p) { return s.rfind(p, 0) == 0; };
+    if (starts("JNI:") || starts("JavaVM:")) return false;          // Java may wait on other threads
+    if (starts("gl")) return s != "glFinish";
+    if (starts("__aeabi_") || starts("str") || starts("mem") || starts("wcs") || starts("wmem") || starts("is") ||
+        starts("to") || starts("__is") || starts("__fpclassify") || starts("__signbit") || starts("__str") ||
+        starts("__mem") || starts("pthread_mutexattr_") || starts("pthread_condattr_") || starts("pthread_attr_") ||
+        starts("pthread_rwlockattr_"))
+        return true;
+    static const char* const kFast[] = {
+        "malloc", "calloc", "realloc", "free", "memalign", "posix_memalign", "aligned_alloc", "valloc",
+        "malloc_usable_size", "dlmalloc_usable_size", "_Znwj", "_Znaj", "_ZnwjRKSt9nothrow_t", "_ZnajRKSt9nothrow_t",
+        "_ZdlPv", "_ZdaPv", "_ZdlPvRKSt9nothrow_t", "_ZdaPvRKSt9nothrow_t", "_ZdlPvj", "_ZdaPvj", "bcmp", "bcopy",
+        "bzero", "index", "rindex", "sprintf", "snprintf", "vsprintf", "vsnprintf", "__sprintf_chk", "__snprintf_chk",
+        "__vsprintf_chk", "__vsnprintf_chk", "asprintf", "vasprintf", "sscanf", "vsscanf", "swprintf", "vswprintf",
+        "atoi", "atol", "atoll", "atof", "abs", "labs", "llabs", "div", "ldiv", "lldiv", "rand", "srand", "random",
+        "srandom", "rand_r", "lrand48", "mrand48", "drand48", "srand48", "arc4random", "arc4random_uniform",
+        "clock_gettime", "gettimeofday", "time", "clock", "__errno", "getpid", "gettid", "pthread_self",
+        "pthread_equal", "pthread_getspecific", "pthread_setspecific", "pthread_mutex_lock", "pthread_mutex_unlock",
+        "pthread_mutex_trylock", "pthread_mutex_init", "pthread_mutex_destroy", "pthread_cond_signal",
+        "pthread_cond_broadcast", "pthread_cond_init", "pthread_cond_destroy", "pthread_rwlock_unlock",
+        "pthread_rwlock_tryrdlock", "pthread_rwlock_trywrlock", "pthread_rwlock_init", "pthread_rwlock_destroy",
+        "pthread_rwlock_rdlock", "pthread_rwlock_wrlock", "sem_post", "sem_trywait", "sem_getvalue", "sem_wait",
+        "__cxa_guard_release", "__cxa_guard_abort", "__cxa_atexit", "__aeabi_atexit", "qsort", "bsearch",
+        "localtime", "gmtime", "localtime_r", "gmtime_r", "mktime", "difftime", "timegm", "mbstowcs", "wcstombs",
+        "mbtowc", "wctomb", "mblen", "btowc", "wctob", "mbrtowc", "wcrtomb", "mbrlen", "mbsinit", "wctype",
+        "iswctype", "crc32", "adler32", "crc32_combine", "adler32_combine", "compress", "compress2", "compressBound",
+        "uncompress", "inflate", "inflateInit_", "inflateInit2_", "inflateEnd", "inflateReset", "inflateReset2",
+        "deflate", "deflateInit_", "deflateInit2_", "deflateEnd", "deflateReset", "deflateBound", "deflateParams",
+        "zlibVersion", "zError", "eglGetError", "eglGetCurrentContext", "eglGetCurrentDisplay",
+        "eglGetCurrentSurface", "eglGetProcAddress", "AAsset_read", "AAsset_seek", "AAsset_seek64",
+        "AAsset_getLength", "AAsset_getLength64", "AAsset_getRemainingLength", "AAsset_getRemainingLength64",
+        "__android_log_print", "__android_log_write", "__android_log_vprint", "__android_log_buf_write",
+        "__android_log_buf_print", "__android_log_is_loggable", "setjmp", "_setjmp", "sigsetjmp", "longjmp",
+        "_longjmp", "siglongjmp", "sinf", "cosf", "sqrtf", "floorf", "ceilf", "powf", "atan2f", "fmodf", "expf",
+        "logf", "tanf", "fabsf", "sin", "cos", "sqrt", "floor", "ceil", "pow", "atan2", "fmod", "exp", "log", "tan",
+        "fabs", "exp2f", "log10f", "roundf", "lroundf", "acosf", "asinf", "atanf", "fminf", "fmaxf", "ldexpf",
+        "frexpf", "modff", "sincosf", "hypotf", "log2f", "truncf", "round", "lround", "trunc", "acos", "asin",
+        "atan", "fmin", "fmax", "ldexp", "frexp", "modf", "sincos", "hypot", "log2", "log10", "exp2"};
+    for (const char* f : kFast)
+        if (s == f) return true;
+    return false;
+}
 
 u32 g_trap_base = 0;
 TrapEntry* g_traps = nullptr;
@@ -45,7 +95,7 @@ void return_trap(Cpu&, void*) {}
 u32 trap_create(const char* name, TrapFn fn, void* ud) {
     u32 idx = g_trap_count.fetch_add(1);
     if (idx >= kMaxTraps) fatal("out of trap slots");
-    g_traps[idx] = TrapEntry{fn, ud, name ? strdup(name) : "?"};
+    g_traps[idx] = TrapEntry{fn, ud, name ? strdup(name) : "?", name && is_fast_trap(name)};
     return g_trap_base + idx * kStubSize;
 }
 
@@ -82,31 +132,67 @@ std::mutex g_gil_mu;
 std::condition_variable g_gil_cv;
 u64 g_next_ticket = 0, g_serving = 0;
 uc_struct* g_gil_owner = nullptr;
-std::atomic<int> g_gil_waiters{0};
-}  // namespace
+std::atomic<bool> g_yield_request{false};
+thread_local int t_gil_depth = 0;
 
-void gil_acquire(Cpu* c) {
+void gil_lock_raw(Cpu* c) {
     std::unique_lock<std::mutex> lk(g_gil_mu);
     u64 my = g_next_ticket++;
-    if (g_serving != my) {
-        g_gil_waiters.fetch_add(1);
-        while (g_serving != my) {
-            if (g_gil_cv.wait_for(lk, std::chrono::milliseconds(2)) == std::cv_status::timeout) {
-                if (g_serving != my && g_gil_owner) uc_emu_stop(g_gil_owner);
+    while (g_serving != my) {
+        if (my == g_serving + 1) {
+            // Next in line: after one time slice, ask the running thread to yield.
+            if (g_gil_cv.wait_for(lk, std::chrono::milliseconds(3)) == std::cv_status::timeout && g_serving != my) {
+                g_yield_request.store(true, std::memory_order_relaxed);
+                if (g_gil_owner) uc_emu_stop(g_gil_owner);
             }
+        } else {
+            g_gil_cv.wait(lk);
         }
-        g_gil_waiters.fetch_sub(1);
     }
     g_gil_owner = c ? c->uc : nullptr;
+    g_gil_switches.fetch_add(1, std::memory_order_relaxed);
 }
 
-void gil_release() {
+void gil_unlock_raw() {
     {
         std::lock_guard<std::mutex> lk(g_gil_mu);
         g_gil_owner = nullptr;
         g_serving++;
     }
     g_gil_cv.notify_all();
+}
+}  // namespace
+
+// The GIL is re-entrant per thread: host functions such as qsort call back into guest code.
+void gil_acquire(Cpu* c) {
+    if (t_gil_depth++ == 0) gil_lock_raw(c);
+}
+
+void gil_release() {
+    if (--t_gil_depth == 0) gil_unlock_raw();
+}
+
+int gil_release_all() {
+    int d = t_gil_depth;
+    if (d) {
+        t_gil_depth = 0;
+        gil_unlock_raw();
+    }
+    return d;
+}
+
+void gil_restore(int depth, Cpu* c) {
+    if (depth) {
+        gil_lock_raw(c);
+        t_gil_depth = depth;
+    }
+}
+
+void gil_maybe_yield(Cpu* c) {
+    if (!g_yield_request.load(std::memory_order_relaxed)) return;
+    g_yield_request.store(false, std::memory_order_relaxed);
+    int d = gil_release_all();
+    gil_restore(d, c);
 }
 
 // ---------------------------------------------------------------------------
@@ -264,6 +350,11 @@ void guest_crash(Cpu& c, const char* why) {
 
 void Cpu::run(u32 pc) {
     depth++;
+    struct Hold {
+        Cpu* c;
+        explicit Hold(Cpu* cpu) : c(cpu) { gil_acquire(c); }
+        ~Hold() { gil_release(); }
+    } hold(this);
     for (;;) {
         if (epoch != mem_code_epoch()) {
             epoch = mem_code_epoch();
@@ -271,18 +362,18 @@ void Cpu::run(u32 pc) {
         }
         trap_pending = false;
         bad_excp = 0;
-        gil_acquire(this);
         fault_addr = 0;
         fault_type = 0;
         uc_err e = uc_emu_start(uc, pc, 0, 0, 0);
-        gil_release();
         load_regs();
         if (e != UC_ERR_OK) guest_crash(*this, uc_strerror(e));
         if (!trap_pending) {
             if (bad_excp) guest_crash(*this, strfmt("unexpected CPU exception %u", bad_excp & 0xFF).c_str());
             if (r[15] == 0) guest_crash(*this, "jump to NULL");
-            // Asynchronous stop (another thread wants the GIL): just resume.
+            // Asynchronous stop: another thread wants the GIL.
             pc = r[15] | ((cpsr >> 5) & 1);
+            g_yield_request.store(true, std::memory_order_relaxed);
+            gil_maybe_yield(this);
             continue;
         }
         // PC points just after the SVC instruction.
@@ -299,14 +390,23 @@ void Cpu::run(u32 pc) {
             trace[trace_pos++ % 32] = idx + 1;
             g_guest_host_calls.fetch_add(1, std::memory_order_relaxed);
             if (!g_trap_called[idx].exchange(1, std::memory_order_relaxed)) LOGI("first call: %s", t.name);
-            t.fn(*this, t.ud);
+            if (t.fast) {
+                t.fn(*this, t.ud);
+            } else {
+                GilUnlock unlocked(this);
+                t.fn(*this, t.ud);
+            }
             store_regs(regs_dirty);
             pc = pc_override ? r[15] : lr;
+            gil_maybe_yield(this);
         } else {
             // A raw Linux system call made by guest code.
             regs_dirty = false;
             u32 next = r[15] | (thumb ? 1 : 0);
-            r[0] = guest_syscall(*this, r[7]);
+            {
+                GilUnlock unlocked(this);
+                r[0] = guest_syscall(*this, r[7]);
+            }
             store_regs(regs_dirty);
             pc = next;
         }

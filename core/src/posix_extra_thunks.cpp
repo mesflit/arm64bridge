@@ -12,6 +12,7 @@
 #include <sys/socket.h>
 #include <sys/statfs.h>
 #include <sys/uio.h>
+#include <sys/utsname.h>
 #include <unistd.h>
 #include <wchar.h>
 #include <wctype.h>
@@ -271,6 +272,12 @@ void register_posix_extra_thunks() {
 
     // ---------------------------------------------------------------- network names
     reg("gethostname", +[](char* buf, size_t n) -> int { return gethostname(buf, n); });
+    // struct utsname is six 65-byte strings on every ABI. Report the machine a 32-bit process would see.
+    reg("uname", +[](struct utsname* u) -> int {
+        int r = uname(u);
+        if (r == 0) snprintf(u->machine, sizeof(u->machine), "armv7l");
+        return r;
+    });
     reg("inet_ntoa", +[](u32 addr) -> u32 {
         if (!g_inet_buf) g_inet_buf = g_calloc(1, 32);
         in_addr a;

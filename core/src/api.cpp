@@ -181,15 +181,16 @@ void open_log_file(JNIEnv* env) {
         // Every 5 s: frames drawn, guest->host calls and Java->native calls. Shows whether a
         // "frozen" game still renders and whether touch events reach the native code.
         std::thread([] {
-            u64 last_frames = 0, last_calls = 0;
+            u64 last_frames = 0, last_calls = 0, last_sw = 0;
             for (;;) {
                 std::this_thread::sleep_for(std::chrono::seconds(5));
-                u64 f = g_frames.load(), k = g_guest_host_calls.load();
-                LOGI("heartbeat: %.1f fps, %llu guest->host calls/s, %d guest threads; Java->native: %s",
-                     (f - last_frames) / 5.0, (unsigned long long)((k - last_calls) / 5), g_guest_threads.load(),
-                     jni_call_stats().c_str());
+                u64 f = g_frames.load(), k = g_guest_host_calls.load(), sw = g_gil_switches.load();
+                LOGI("heartbeat: %.1f fps, %llu guest->host calls/s, %llu thread switches/s, %d guest threads; Java->native: %s",
+                     (f - last_frames) / 5.0, (unsigned long long)((k - last_calls) / 5),
+                     (unsigned long long)((sw - last_sw) / 5), g_guest_threads.load(), jni_call_stats().c_str());
                 last_frames = f;
                 last_calls = k;
+                last_sw = sw;
             }
         }).detach();
         LOGI("ARM64Bridge %s, log file: %s", A64B_VERSION, fd >= 0 ? where.c_str() : "(none)");

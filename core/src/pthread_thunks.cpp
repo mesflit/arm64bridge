@@ -316,7 +316,13 @@ void register_pthread_thunks() {
         *g2h<u32>(m) = 0;
         return 0;
     });
-    reg("pthread_mutex_lock", +[](u32 m) -> int { return pthread_mutex_lock(get_mutex(m)); });
+    reg("pthread_mutex_lock", +[](u32 m) -> int {
+        pthread_mutex_t* h = get_mutex(m);
+        int r = pthread_mutex_trylock(h);
+        if (r != EBUSY) return r;
+        GilUnlock unlocked(Cpu::current_or_null());
+        return pthread_mutex_lock(h);
+    });
     reg("pthread_mutex_trylock", +[](u32 m) -> int { return pthread_mutex_trylock(get_mutex(m)); });
     reg("pthread_mutex_unlock", +[](u32 m) -> int { return pthread_mutex_unlock(get_mutex(m)); });
     reg("pthread_mutex_timedlock", +[](u32 m, const GTimespec* ts) -> int {
@@ -393,9 +399,19 @@ void register_pthread_thunks() {
         *g2h<u32>(l) = 0;
         return 0;
     });
-    reg("pthread_rwlock_rdlock", +[](u32 l) -> int { return pthread_rwlock_rdlock(get_rwlock(l)); });
+    reg("pthread_rwlock_rdlock", +[](u32 l) -> int {
+        pthread_rwlock_t* h = get_rwlock(l);
+        if (pthread_rwlock_tryrdlock(h) == 0) return 0;
+        GilUnlock unlocked(Cpu::current_or_null());
+        return pthread_rwlock_rdlock(h);
+    });
     reg("pthread_rwlock_tryrdlock", +[](u32 l) -> int { return pthread_rwlock_tryrdlock(get_rwlock(l)); });
-    reg("pthread_rwlock_wrlock", +[](u32 l) -> int { return pthread_rwlock_wrlock(get_rwlock(l)); });
+    reg("pthread_rwlock_wrlock", +[](u32 l) -> int {
+        pthread_rwlock_t* h = get_rwlock(l);
+        if (pthread_rwlock_trywrlock(h) == 0) return 0;
+        GilUnlock unlocked(Cpu::current_or_null());
+        return pthread_rwlock_wrlock(h);
+    });
     reg("pthread_rwlock_trywrlock", +[](u32 l) -> int { return pthread_rwlock_trywrlock(get_rwlock(l)); });
     reg("pthread_rwlock_unlock", +[](u32 l) -> int { return pthread_rwlock_unlock(get_rwlock(l)); });
     reg("pthread_rwlockattr_init", +[](u32* at) -> int { *at = 0; return 0; });
@@ -456,7 +472,12 @@ void register_pthread_thunks() {
         *g2h<u32>(s) = 0;
         return 0;
     });
-    reg("sem_wait", +[](u32 s) -> int { return sem_wait(get_sem(s, false)); });
+    reg("sem_wait", +[](u32 s) -> int {
+        sem_t* h = get_sem(s, false);
+        if (sem_trywait(h) == 0) return 0;
+        GilUnlock unlocked(Cpu::current_or_null());
+        return sem_wait(h);
+    });
     reg("sem_trywait", +[](u32 s) -> int { return sem_trywait(get_sem(s, false)); });
     reg("sem_post", +[](u32 s) -> int { return sem_post(get_sem(s, false)); });
     reg("sem_timedwait", +[](u32 s, const GTimespec* ts) -> int {
