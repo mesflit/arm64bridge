@@ -31,7 +31,8 @@ public final class GuestDemo {
     public static native boolean sameEnv();
 
     // Called from native code.
-    public static int twice(int v) { return v * 2; }
+    // Re-enters the guest library while it is in the middle of a JNI call (nested emulation).
+    public static int twice(int v) { return add(v, v); }
     public static String describe(long a, double b, String c, float d) { return a + "|" + b + "|" + c + "|" + d; }
     public int bump(int by) { counter += by; return counter; }
 

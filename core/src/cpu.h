@@ -70,9 +70,13 @@ struct Cpu {
 
     ~Cpu();
 
+    // Called from the CPU's SVC handler: runs a host function without leaving the emulator.
+    void on_swi();
+
   private:
     Cpu();
     void run(u32 pc);
+    void dispatch_trap(u32 idx);
     void load_regs();
     void store_regs(bool all);
     friend struct CpuHolder;

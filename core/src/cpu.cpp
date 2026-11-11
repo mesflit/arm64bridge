@@ -33,6 +33,7 @@ struct TrapEntry {
     void* ud;
     const char* name;
     bool fast;  // never waits for another guest thread: runs without dropping the GIL
+    bool slow;  // must run outside the emulator (throws, or replaces PC/SP)
 };
 
 // Host functions that cannot wait for another guest thread. Everything else drops the
@@ -95,7 +96,9 @@ void return_trap(Cpu&, void*) {}
 u32 trap_create(const char* name, TrapFn fn, void* ud) {
     u32 idx = g_trap_count.fetch_add(1);
     if (idx >= kMaxTraps) fatal("out of trap slots");
-    g_traps[idx] = TrapEntry{fn, ud, name ? strdup(name) : "?", name && is_fast_trap(name)};
+    std::string_view n = name ? name : "";
+    bool slow = n == "pthread_exit" || n == "longjmp" || n == "_longjmp" || n == "siglongjmp";
+    g_traps[idx] = TrapEntry{fn, ud, name ? strdup(name) : "?", name && is_fast_trap(name), slow};
     return g_trap_base + idx * kStubSize;
 }
 
@@ -207,8 +210,7 @@ const int kAllRegs[17] = {UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2,  UC_ARM_R
 void intr_hook(uc_engine* uc, uint32_t intno, void* user) {
     Cpu* c = static_cast<Cpu*>(user);
     if (intno == 2 /* EXCP_SWI */) {
-        c->trap_pending = true;
-        uc_emu_stop(uc);
+        c->on_swi();
     } else {
         // Leave trap_pending false; the run loop reports the failure.
         c->bad_excp = intno | 0x100;
@@ -348,6 +350,50 @@ void guest_crash(Cpu& c, const char* why) {
     fatal("guest code crashed (%s)", why);
 }
 
+void Cpu::dispatch_trap(u32 idx) {
+    TrapEntry& t = g_traps[idx];
+    regs_dirty = false;
+    pc_override = false;
+    trace[trace_pos++ % 32] = idx + 1;
+    g_guest_host_calls.fetch_add(1, std::memory_order_relaxed);
+    if (!g_trap_called[idx].exchange(1, std::memory_order_relaxed)) LOGI("first call: %s", t.name);
+    if (t.fast) {
+        t.fn(*this, t.ud);
+    } else {
+        GilUnlock unlocked(this);
+        t.fn(*this, t.ud);
+    }
+}
+
+// Host calls are handled inside the SVC exception hook: the emulator keeps running, which is
+// far cheaper than stopping and restarting it for each of the ~10^5 calls per second a game makes.
+void Cpu::on_swi() {
+    load_regs();
+    bool thumb = (cpsr >> 5) & 1;
+    u32 svc_addr = r[15] - (thumb ? 2 : 4);
+    if (!thumb && svc_addr >= g_trap_base && svc_addr < g_trap_base + kMaxTraps * kStubSize) {
+        u32 idx = (svc_addr - g_trap_base) / kStubSize;
+        TrapEntry& t = g_traps[idx];
+        if (svc_addr == g_return_trap || t.slow || !t.fn) {
+            trap_pending = true;  // handled by the run loop after the emulator has stopped
+            uc_emu_stop(uc);
+            return;
+        }
+        dispatch_trap(idx);
+        store_regs(regs_dirty);
+        // Execution continues with the "bx lr" that follows the SVC in the stub.
+    } else {
+        regs_dirty = false;
+        {
+            GilUnlock unlocked(this);
+            r[0] = guest_syscall(*this, r[7]);
+        }
+        store_regs(regs_dirty);
+    }
+    if (epoch != mem_code_epoch()) uc_emu_stop(uc);  // the run loop flushes stale translations
+    gil_maybe_yield(this);
+}
+
 void Cpu::run(u32 pc) {
     depth++;
     struct Hold {
@@ -370,9 +416,9 @@ void Cpu::run(u32 pc) {
         if (!trap_pending) {
             if (bad_excp) guest_crash(*this, strfmt("unexpected CPU exception %u", bad_excp & 0xFF).c_str());
             if (r[15] == 0) guest_crash(*this, "jump to NULL");
-            // Asynchronous stop: another thread wants the GIL.
+            // Asynchronous stop (another thread asked for the GIL, the translation cache must be
+            // flushed, or a nested call left the stop flag set): resume where the guest was.
             pc = r[15] | ((cpsr >> 5) & 1);
-            g_yield_request.store(true, std::memory_order_relaxed);
             gil_maybe_yield(this);
             continue;
         }
@@ -384,18 +430,8 @@ void Cpu::run(u32 pc) {
             if (svc_addr == g_return_trap) break;
             TrapEntry& t = g_traps[idx];
             if (!t.fn) guest_crash(*this, "call through an unassigned trap slot");
-            regs_dirty = false;
-            pc_override = false;
             u32 lr = r[14];
-            trace[trace_pos++ % 32] = idx + 1;
-            g_guest_host_calls.fetch_add(1, std::memory_order_relaxed);
-            if (!g_trap_called[idx].exchange(1, std::memory_order_relaxed)) LOGI("first call: %s", t.name);
-            if (t.fast) {
-                t.fn(*this, t.ud);
-            } else {
-                GilUnlock unlocked(this);
-                t.fn(*this, t.ud);
-            }
+            dispatch_trap(idx);
             store_regs(regs_dirty);
             pc = pc_override ? r[15] : lr;
             gil_maybe_yield(this);
@@ -440,10 +476,16 @@ u64 Cpu::call(u32 fn, const u32* words, size_t nwords) {
     run(fn);
 
     u64 ret = (u64)r[0] | ((u64)r[1] << 32);
+    trap_pending = false;
     if (depth > 0) {
+        // We are inside a host function called by guest code (usually from the SVC hook):
+        // put the interrupted context back, including PC, before the outer emulation resumes.
         memcpy(r, saved, sizeof(saved));
         cpsr = saved_cpsr;
         store_regs(true);
+        uc_reg_write(uc, UC_ARM_REG_CPSR, &saved_cpsr);
+        u32 pcv = saved[15] | ((saved_cpsr >> 5) & 1);
+        uc_reg_write(uc, UC_ARM_REG_PC, &pcv);
     }
     regs_dirty = saved_dirty;
     pc_override = saved_override;
