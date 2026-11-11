@@ -25,7 +25,7 @@ lib/armeabi-v7a/libgame.so   ──►     lib/armeabi-v7a/libgame.so      (doku
    adı taşıyan küçük bir 64-bit *shim*. Android artık uygulamayı normal bir 64-bit uygulama olarak görür ve kurar.
 2. Uygulama `System.loadLibrary("game")` çağırdığında Android 64-bit shim'i yükler. Shim, köprüye haber verir.
 3. Köprü asıl 32-bit `libgame.so` dosyasını APK'nın içinden okur, 4 GB altındaki bir bellek bölgesine yükler
-   (kendi ELF yükleyicisi) ve kodu emüle edilen bir ARMv7 işlemcide ([dynarmic](https://github.com/merryhime/dynarmic) dinamik yeniden derleyici) çalıştırır.
+   (kendi ELF yükleyicisi) ve kodu emüle edilen bir ARMv7 işlemcide ([dynarmic](https://github.com/yuzu-mirror/dynarmic) dinamik yeniden derleyici) çalıştırır.
 4. 32-bit kodun çağırdığı sistem fonksiyonları (libc, libm, pthread, liblog, OpenGL ES, EGL, ...) 64-bit gerçek
    karşılıklarına çevrilir. JNI iki yönde de köprülenir: Java → yerel metotlar ve yerel kod → `JNIEnv` çağrıları.
 

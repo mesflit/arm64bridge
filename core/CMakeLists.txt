@@ -32,9 +32,8 @@ else()
   set(DYNARMIC_USE_BUNDLED_EXTERNALS ON CACHE BOOL "" FORCE)
   set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
   FetchContent_Declare(dynarmic
-    GIT_REPOSITORY https://github.com/merryhime/dynarmic.git
-    GIT_TAG 6.7.0
-    GIT_SHALLOW TRUE)
+    GIT_REPOSITORY https://github.com/yuzu-mirror/dynarmic.git
+    GIT_TAG fa6cc2e4b2a2954f2298b6548174479c5b106c2a)  # dynarmic 6.7.0
   FetchContent_MakeAvailable(dynarmic)
 endif()
 
