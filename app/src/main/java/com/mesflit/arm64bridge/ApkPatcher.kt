@@ -59,10 +59,13 @@ class ApkPatcher(private val context: Context) {
         enum class Kind { OBB, DATA }
     }
 
-    /** [inGameMenu] only applies to apps that get the bridge (the menu runs inside the bridge runtime). */
+    /**
+     * Apps that get the bridge always show their frame rate in a small in-game menu; [fpsBooster] adds the
+     * FPS booster controls to it.
+     */
     class Options(
         val manifest: AxmlPatcher.Edits,
-        val inGameMenu: Boolean = false,
+        val fpsBooster: Boolean = false,
         val extras: List<Extra> = emptyList(),
     )
 
@@ -131,7 +134,7 @@ class ApkPatcher(private val context: Context) {
                         progress(index * 80 / entries.size.coerceAtLeast(1))
                         val name = entry.name
                         if (entry.isDirectory || !seen.add(name)) continue
-                        if (isSignatureFile(name) || name.startsWith(MENU_ASSETS + "classes")) continue
+                        if (isSignatureFile(name) || name.startsWith(MENU_ASSETS + "classes") || name == MENU_ASSETS + "fps-booster") continue
                         if (embed && (name.startsWith(OBB_ASSETS) || name.startsWith(DATA_ASSETS))) continue
                         if (bridge && name.startsWith("lib/arm64-v8a/")) continue
                         val dexMatch = DEX_NAME.matchEntire(name)
@@ -195,13 +198,14 @@ class ApkPatcher(private val context: Context) {
                         }
                         out.setLevel(Deflater.DEFAULT_COMPRESSION)
                     }
-                    if (bridge && options.inGameMenu) {
+                    if (bridge) {
                         // The in-game menu is a class of this app; the runtime loads it from these copies of our dex.
                         ZipFile(context.applicationInfo.sourceDir).use { self ->
                             for (dex in self.entries().asSequence().filter { it.name.matches(Regex("classes\\d*\\.dex")) }) {
                                 writeDeflated(out, MENU_ASSETS + dex.name, self.getInputStream(dex).use { it.readBytes() })
                             }
                         }
+                        if (options.fpsBooster) writeDeflated(out, MENU_ASSETS + "fps-booster", ByteArray(0))
                     }
                     if (bridge) {
                         // The bridge runtime plus one shim per original library.

@@ -358,6 +358,7 @@ void register_android_thunks() {
     reg("eglSwapBuffers", +[](u32 d, u32 s) -> u32 {
         g_frames.fetch_add(1, std::memory_order_relaxed);
         g_render_tid.store((int)gettid(), std::memory_order_relaxed);
+        probe_frame();
         static thread_local bool boosted = false;
         if (!boosted) {
             // The thread that presents frames gets display priority, like Android's own RenderThread.

@@ -290,7 +290,7 @@ jfloat JNICALL overlay_fps(JNIEnv*, jclass) {
     return fps;
 }
 
-// The patcher puts the dex of the ARM64Bridge app into assets/arm64bridge/ when the menu is wanted.
+// The patcher puts the dex of the ARM64Bridge app into assets/arm64bridge/ (FPS display and in-game menu).
 void load_overlay(JNIEnv* env) {
     static std::once_flag once;
     std::call_once(once, [env] {
@@ -337,15 +337,19 @@ void load_overlay(JNIEnv* env) {
         overlay = (jclass)env->NewGlobalRef(overlay);
         const JNINativeMethod natives[] = {{const_cast<char*>("nativeSetLimiter"), const_cast<char*>("(I)V"), (void*)overlay_set_limiter},
                                            {const_cast<char*>("nativeFps"), const_cast<char*>("()F"), (void*)overlay_fps}};
-        jmethodID install = env->GetStaticMethodID(overlay, "install", "(Landroid/app/Application;)V");
+        // The FPS booster controls are an option of the patcher (marker file in the APK).
+        std::vector<u8> marker;
+        bool booster = zip_extract(g_apk_path, "assets/arm64bridge/fps-booster", marker);
+        if (!booster) g_frame_limiter.store(0);
+        jmethodID install = env->GetStaticMethodID(overlay, "install", "(Landroid/app/Application;Z)V");
         if (env->RegisterNatives(overlay, natives, 2) != JNI_OK || clear_exc(env) || !install) {
             clear_exc(env);
             LOGW("in-game menu: could not bind the menu");
             return;
         }
-        env->CallStaticVoidMethod(overlay, install, app);
+        env->CallStaticVoidMethod(overlay, install, app, (jboolean)booster);
         if (clear_exc(env)) LOGW("in-game menu: installation failed");
-        else LOGI("in-game menu installed");
+        else LOGI("in-game menu installed (FPS booster %s)", booster ? "on" : "off");
     });
 }
 

@@ -456,12 +456,14 @@ void register_libc_thunks() {
         c.set_ret32((u32)t);
     });
     reg("gettimeofday", +[](GTimeval* tv, void*) -> int {
+        probe_time_call(0);
         timeval h;
         gettimeofday(&h, nullptr);
         if (tv) { tv->tv_sec = (i32)h.tv_sec; tv->tv_usec = (i32)h.tv_usec; }
         return 0;
     });
     reg("clock_gettime", +[](int clk, GTimespec* ts) -> int {
+        probe_time_call(1);
         timespec h;
         int r = clock_gettime(clk, &h);
         if (r == 0 && ts) to_guest(ts, h);
@@ -476,6 +478,7 @@ void register_libc_thunks() {
     reg("clock", +[]() -> u32 { return (u32)clock(); });
     reg("nanosleep", +[](const GTimespec* req, GTimespec* rem) -> int {
         timespec h = from_guest(req), hr = {};
+        probe_time_call(2, (u64)h.tv_sec * 1000000ull + (u64)h.tv_nsec / 1000);
         if (int mode = limiter_mode_for_this_thread()) {
             if (mode == 2) { if (rem) to_guest(rem, hr); return 0; }
             long long ns = (h.tv_sec * 1000000000ll + h.tv_nsec) / 2;
@@ -493,6 +496,7 @@ void register_libc_thunks() {
         return r;
     });
     reg("usleep", +[](u32 us) -> int {
+        probe_time_call(2, us);
         if (int mode = limiter_mode_for_this_thread()) {
             if (mode == 2) return 0;
             us /= 2;
@@ -599,7 +603,10 @@ void register_libc_thunks() {
             default: return -1;
         }
     });
-    reg("sched_yield", +[]() -> int { return sched_yield(); });
+    reg("sched_yield", +[]() -> int {
+        probe_time_call(3);
+        return sched_yield();
+    });
     reg("sched_getcpu", +[]() -> int { return 0; });
     reg("sched_get_priority_max", +[](int p) -> int { return sched_get_priority_max(p); });
     reg("sched_get_priority_min", +[](int p) -> int { return sched_get_priority_min(p); });

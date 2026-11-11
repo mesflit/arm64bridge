@@ -44,10 +44,12 @@ Options shown when applicable:
 - **Low-resolution rendering** (optional): runs the app in Android's screen compatibility mode
   (`anyDensity="false"`). Use it for very old games that draw tiny graphics on a modern high-resolution screen.
 
-- **In-game menu** (optional): adds a small floating button inside the game (no overlay permission needed).
-  It shows the frame rate and can relax or switch off the game's own frame limiter. If a game ties its speed to
-  the frame rate it will run too fast with the limiter off; switch it back in the same menu.
-  Only for apps that get the bridge.
+- **FPS display** (always, for apps that get the bridge): a small floating button inside the game shows the frame
+  rate (no overlay permission needed). Tap it for the menu, drag it to move it, hold it to open this project page.
+- **FPS booster** (optional): adds controls to that menu which shorten or skip the game's own frame waits. This
+  helps games that limit their frame rate with sleeps. Games that wait on the clock (for example Minion Rush) keep
+  their limit for now; the bridge logs where such a limiter is so it can be supported. If a game ties its speed to
+  the frame rate it runs too fast with the booster on; switch it off in the same menu.
 
 Customization (optional, works on any APK):
 

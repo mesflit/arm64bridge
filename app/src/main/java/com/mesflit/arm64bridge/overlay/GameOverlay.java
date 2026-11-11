@@ -3,9 +3,11 @@ package com.mesflit.arm64bridge.overlay;
 
 import android.app.Activity;
 import android.app.Application;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -30,7 +32,8 @@ import java.util.Locale;
 public final class GameOverlay implements Application.ActivityLifecycleCallbacks {
     private static final String TAG_VIEW = "arm64bridge-overlay";
     private static final String PREFS = "arm64bridge";
-    private static final String[] LIMITER_LABELS = {"Frame limiter: game default", "Frame limiter: relaxed (×2)", "Frame limiter: off"};
+    private static final String[] LIMITER_LABELS = {"FPS booster: off", "FPS booster: shorter waits", "FPS booster: no waits"};
+    private static final String PROJECT_URL = "https://github.com/mesflit/arm64bridge";
 
     /** 0 = leave the game's frame limiter alone, 1 = halve its waits, 2 = skip its waits. */
     private static native void nativeSetLimiter(int mode);
@@ -39,11 +42,17 @@ public final class GameOverlay implements Application.ActivityLifecycleCallbacks
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private int limiter;
+    private boolean booster;
 
-    /** Called by the bridge runtime once the class is loaded. */
-    public static void install(Application app) {
+    /**
+     * Called by the bridge runtime once the class is loaded. The frame rate is always shown;
+     * [booster] (an option of the patcher) adds the FPS booster controls.
+     */
+    public static void install(Application app, boolean booster) {
         GameOverlay overlay = new GameOverlay();
-        overlay.limiter = app.getSharedPreferences(PREFS, 0).getInt("limiter", 0);
+        overlay.booster = booster;
+        overlay.limiter = booster ? app.getSharedPreferences(PREFS, 0).getInt("limiter", 0) : 0;
+        if (overlay.limiter < 0 || overlay.limiter >= LIMITER_LABELS.length) overlay.limiter = 0;
         nativeSetLimiter(overlay.limiter);
         app.registerActivityLifecycleCallbacks(overlay);
     }
@@ -79,14 +88,19 @@ public final class GameOverlay implements Application.ActivityLifecycleCallbacks
         panel.setVisibility(View.GONE);
         final TextView fps = label(activity, "FPS: –", dp);
         final TextView limiterButton = label(activity, LIMITER_LABELS[limiter], dp);
-        final TextView note = label(activity, "If the game runs too fast with the limiter relaxed or off, its speed is tied to the frame rate: switch back.", dp);
+        final TextView note = label(activity, "Shortens or skips the game's frame waits. Some games wait on the clock instead and keep their limit. If the game runs too fast, switch it off.", dp);
         note.setTextSize(10);
+        final TextView about = label(activity, "ARM64Bridge · hold the icon to open the project page", dp);
+        about.setTextSize(10);
         LinearLayout.LayoutParams row = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         row.topMargin = (int) (3 * dp);
         panel.addView(fps, row);
-        panel.addView(limiterButton, row);
-        panel.addView(note, row);
+        if (booster) {
+            panel.addView(limiterButton, row);
+            panel.addView(note, row);
+        }
+        panel.addView(about, row);
         root.addView(handleRow, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
         root.addView(panel, new LinearLayout.LayoutParams(
@@ -101,11 +115,22 @@ public final class GameOverlay implements Application.ActivityLifecycleCallbacks
             e.apply();
         });
 
-        // Drag the handle to move the menu, tap it to open or close the panel.
+        // Drag the handle to move the menu, tap it to open or close the panel, hold it to open the project page.
         final int slop = ViewConfiguration.get(activity).getScaledTouchSlop();
+        final Runnable openProject = () -> {
+            try {
+                activity.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(PROJECT_URL)));
+            } catch (RuntimeException ignored) {
+                // No browser.
+            }
+        };
         handle.setOnTouchListener(new View.OnTouchListener() {
             float downX, downY, startX, startY;
-            boolean moved;
+            boolean moved, longPressed;
+            final Runnable longPress = () -> {
+                longPressed = true;
+                openProject.run();
+            };
 
             @Override
             public boolean onTouch(View v, MotionEvent ev) {
@@ -116,17 +141,26 @@ public final class GameOverlay implements Application.ActivityLifecycleCallbacks
                         startX = root.getTranslationX();
                         startY = root.getTranslationY();
                         moved = false;
+                        longPressed = false;
+                        handler.postDelayed(longPress, ViewConfiguration.getLongPressTimeout());
                         return true;
                     case MotionEvent.ACTION_MOVE:
                         float dx = ev.getRawX() - downX, dy = ev.getRawY() - downY;
-                        if (Math.abs(dx) > slop || Math.abs(dy) > slop) moved = true;
+                        if (!moved && (Math.abs(dx) > slop || Math.abs(dy) > slop)) {
+                            moved = true;
+                            handler.removeCallbacks(longPress);
+                        }
                         if (moved) {
                             root.setTranslationX(startX + dx);
                             root.setTranslationY(startY + dy);
                         }
                         return true;
+                    case MotionEvent.ACTION_CANCEL:
+                        handler.removeCallbacks(longPress);
+                        return true;
                     case MotionEvent.ACTION_UP:
-                        if (!moved) panel.setVisibility(panel.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE);
+                        handler.removeCallbacks(longPress);
+                        if (!moved && !longPressed) panel.setVisibility(panel.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE);
                         return true;
                     default:
                         return false;
@@ -149,7 +183,7 @@ public final class GameOverlay implements Application.ActivityLifecycleCallbacks
                 fps.setText(text);
                 boolean showBadge = value >= 0 && panel.getVisibility() != View.VISIBLE;
                 badge.setVisibility(showBadge ? View.VISIBLE : View.GONE);
-                if (showBadge) badge.setText(String.format(Locale.US, "%.0f", value));
+                if (showBadge) badge.setText(String.format(Locale.US, "%.0f FPS", value));
                 handler.postDelayed(this, 1000);
             }
         });
