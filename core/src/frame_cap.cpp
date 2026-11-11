@@ -20,6 +20,7 @@
 
 #include <atomic>
 #include <cstring>
+#include <mutex>
 
 namespace a64b {
 namespace {
@@ -43,8 +44,15 @@ const Pattern PATTERNS[] = {
 
 std::atomic<u32> g_site{0};          // return address of the limiter's clock call (0 = no known limiter)
 const Pattern* g_pattern = nullptr;
-std::atomic<long long> g_original{-1};  // the game's own frame time (us)
-std::atomic<long long> g_written{-1};   // value this file last left in the limiter object
+// Games can have several limiter objects (for example one per game state).
+struct Slot {
+    u32 obj = 0;
+    long long original = -1;  // the game's own frame time (us)
+    long long written = -1;   // value this file last left in the object
+};
+std::mutex g_slots_mu;
+Slot g_slots[8];
+int g_next_slot = 0;
 
 bool matches(const u8* p, const Pattern& pat) {
     for (int i = 0; i < pat.count; i++) {
@@ -93,20 +101,29 @@ void frame_cap_on_clock(Cpu& c) {
     u32 obj = c.r[4];
     if (!mem_is_mapped(obj, g_pattern->target_offset + 8)) return;
     long long* target = g2h<long long>(obj + g_pattern->target_offset);
-    long long cur = *target;
-    if (cur != g_written.load(std::memory_order_relaxed)) {
-        // First call, or the game set a new frame time itself: that is its own limit from now on.
-        if (g_original.exchange(cur) != cur)
-            LOGI("FPS booster: game frame limit %lld us per frame (%.0f FPS)", cur, cur > 0 ? 1e6 / (double)cur : 0.0);
+    std::lock_guard<std::mutex> lk(g_slots_mu);
+    Slot* slot = nullptr;
+    for (Slot& sl : g_slots)
+        if (sl.obj == obj) slot = &sl;
+    if (!slot) {
+        slot = &g_slots[g_next_slot++ % 8];
+        *slot = Slot();
+        slot->obj = obj;
     }
-    long long original = g_original.load(std::memory_order_relaxed), want = original;
+    long long cur = *target;
+    if (cur != slot->written && cur != slot->original) {
+        // First call, or the game set a new frame time itself: that is its own limit from now on.
+        slot->original = cur;
+        LOGI("FPS booster: frame limiter 0x%08x: game limit %lld us per frame (%.0f FPS)", obj, cur, cur > 0 ? 1e6 / (double)cur : 0.0);
+    }
+    long long original = slot->original, want = original;
     switch (g_frame_limiter.load(std::memory_order_relaxed)) {
         case 1: want = original > 16666 ? 16666 : original; break;  // 60 FPS
         case 2: want = 0; break;                                    // no limit (the display still paces frames)
         default: break;
     }
     if (cur != want) *target = want;
-    g_written.store(want, std::memory_order_relaxed);
+    slot->written = want;
 }
 
 }  // namespace a64b

@@ -67,7 +67,7 @@ Probe* probe_for_this_thread() {
 
 void dump_code(u32 addr) {
     addr &= ~1u;
-    u32 start = (addr - 256) & ~15u, end = addr + 256;
+    u32 start = (addr - 384) & ~15u, end = addr + 256;
     for (u32 a = start; a < end; a += 16) {
         if (!mem_is_mapped(a, 16)) continue;
         const u8* b = g2h<u8>(a);
@@ -96,10 +96,15 @@ void report(Probe& p) {
             if (s.caller1) LOGI("      via %s", describe_address(s.caller1 & ~1u).c_str());
             if (s.caller2) LOGI("      via %s", describe_address(s.caller2 & ~1u).c_str());
             // Code of the two busiest sites of each kind, once per report.
-            if (i < 2 && std::find(dumped.begin(), dumped.end(), s.lr) == dumped.end()) {
-                dumped.push_back(s.lr);
-                LOGI("    code around %08x (%s):", s.lr & ~1u, (s.lr & 1) ? "thumb" : "arm");
-                dump_code(s.lr);
+            // Code of the busiest sites of each kind and of their callers (a clock helper is often
+            // called from the loop that actually waits).
+            if (i < 3) {
+                for (u32 at : {s.lr, s.caller1}) {
+                    if (!at || std::find(dumped.begin(), dumped.end(), at) != dumped.end()) continue;
+                    dumped.push_back(at);
+                    LOGI("    code around %08x (%s):", at & ~1u, (at & 1) ? "thumb" : "arm");
+                    dump_code(at);
+                }
             }
         }
         p.sites[k].clear();
