@@ -24,6 +24,7 @@ struct JniFrame {
     Cpu& c;
     size_t base;
     void* saved_env;
+    u32 keep_key = 0; // identifies the native method (for recognising the same argument object again)
     size_t keep = 0;  // leading references of this frame (the call's arguments) to keep alive afterwards
     JniFrame(Cpu& cpu, JNIEnv* env);
     ~JniFrame();

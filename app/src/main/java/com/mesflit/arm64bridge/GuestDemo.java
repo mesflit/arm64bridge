@@ -71,7 +71,7 @@ public final class GuestDemo {
         check(sb, failed, "fib", fib(90) == 2880067194370816120L);
         check(sb, failed, "libc score " + libc(), libc() == 63);
         remember(new String("kept across calls"));
-        add(1, 2);
+        for (int i = 0; i < 20000; i++) add(i, 2);  // many later calls must not push the reference out
         System.gc();
         check(sb, failed, "object argument used after the call returned", recallLength() == 17);
         int posix = posix();

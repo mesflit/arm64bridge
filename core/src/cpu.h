@@ -62,8 +62,10 @@ struct Cpu {
     u32 next_local_serial = 1;
     // Object arguments of finished native calls, kept alive as global references: games written
     // for Dalvik often keep such a jobject and use it in a later call.
-    std::unordered_map<u32, void*> kept_refs;
-    std::deque<u32> kept_order;
+    std::unordered_map<u32, void*> kept_refs;      // token -> global reference
+    std::deque<u32> kept_unique;                    // tokens that own their global reference
+    std::deque<u32> kept_alias;                     // tokens that share an earlier one (same object again)
+    std::unordered_map<u64, void*> kept_last;       // (method, argument) -> global reference of the last call
 
     static Cpu& current();
     static Cpu* current_or_null();

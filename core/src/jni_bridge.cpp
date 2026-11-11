@@ -106,7 +106,8 @@ JNIEnv* jni_host_env(Cpu& c) {
 }
 
 namespace {
-constexpr size_t kMaxKeptRefs = 512;
+constexpr size_t kMaxKeptRefs = 4096;    // distinct argument objects kept alive per thread
+constexpr size_t kMaxKeptAliases = 1024;
 
 // Index of a local token in the thread's table, or -1.
 int local_index(Cpu& c, u32 serial) {
@@ -150,19 +151,39 @@ JniFrame::JniFrame(Cpu& cpu, JNIEnv* env) : c(cpu), base(cpu.locals.size()), sav
 JniFrame::~JniFrame() {
     JNIEnv* env = static_cast<JNIEnv*>(c.host_env);
     for (size_t i = base; env && i < base + keep && i < c.locals.size(); i++) {
-        if (!c.locals[i]) continue;
-        jobject g = env->NewGlobalRef(static_cast<jobject>(c.locals[i]));
-        if (!g) continue;
-        c.kept_refs[c.local_serials[i]] = g;
-        c.kept_order.push_back(c.local_serials[i]);
-    }
-    while (env && c.kept_order.size() > kMaxKeptRefs) {
-        auto it = c.kept_refs.find(c.kept_order.front());
-        if (it != c.kept_refs.end()) {
-            env->DeleteGlobalRef(static_cast<jobject>(it->second));
-            c.kept_refs.erase(it);
+        jobject local = static_cast<jobject>(c.locals[i]);
+        if (!local) continue;
+        u32 serial = c.local_serials[i];
+        u64 key = ((u64)keep_key << 8) | (i - base);
+        auto last = c.kept_last.find(key);
+        if (last != c.kept_last.end() && env->IsSameObject(local, static_cast<jobject>(last->second))) {
+            // The same object as in the previous call (typically "this"): share its reference.
+            c.kept_refs[serial] = last->second;
+            c.kept_alias.push_back(serial);
+            continue;
         }
-        c.kept_order.pop_front();
+        jobject g = env->NewGlobalRef(local);
+        if (!g) continue;
+        c.kept_refs[serial] = g;
+        c.kept_unique.push_back(serial);
+        c.kept_last[key] = g;
+    }
+    while (c.kept_alias.size() > kMaxKeptAliases) {
+        c.kept_refs.erase(c.kept_alias.front());
+        c.kept_alias.pop_front();
+    }
+    while (env && c.kept_unique.size() > kMaxKeptRefs) {
+        auto it = c.kept_refs.find(c.kept_unique.front());
+        c.kept_unique.pop_front();
+        if (it == c.kept_refs.end()) continue;
+        void* g = it->second;
+        c.kept_refs.erase(it);
+        for (u32 alias : c.kept_alias) {
+            auto a = c.kept_refs.find(alias);
+            if (a != c.kept_refs.end() && a->second == g) c.kept_refs.erase(a);
+        }
+        for (auto l = c.kept_last.begin(); l != c.kept_last.end();) l = l->second == g ? c.kept_last.erase(l) : std::next(l);
+        env->DeleteGlobalRef(static_cast<jobject>(g));
     }
     if (c.locals.size() > base) {
         c.locals.resize(base);
@@ -707,6 +728,7 @@ uint64_t a64b_tramp_dispatch(uint32_t index, uint64_t* saved, uint64_t* stack) {
     w.push_back(guest_env_for(c));
     w.push_back(jni_new_local(c, self));
     frame.keep = 1;
+    frame.keep_key = index + 1;
     for (size_t i = 1; i < m->shorty.size(); i++) {
         switch (m->shorty[i]) {
             case 'J': case 'D': {
