@@ -1,22 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">ARM64Bridge</string>
-    <string name="pick_apk">Choose a 32-bit APK…</string>
-    <string name="no_apk">No APK selected. Pick the APK of a 32-bit-only app (for example an old game) to make it installable on this 64-bit-only device.</string>
+    <string name="pick_apk">Choose an APK…</string>
+    <string name="no_apk">No APK selected. Pick the APK of a 32-bit-only app (for example an old game) to make it installable on this 64-bit-only device. Any other APK can be customized (name, package, permissions, orientation) and re-signed.</string>
     <string name="raise_target_sdk">Raise targetSdkVersion to %1$d (required by this Android version to install the app)</string>
     <string name="legacy_scaling">Low-resolution rendering (optional): run the app in Android\'s screen compatibility mode. Use this for very old games whose graphics and buttons look tiny on this screen.</string>
     <string name="in_game_menu">In-game menu (optional): a small floating button inside the game that shows the frame rate and can relax or switch off the game\'s own frame limiter.</string>
     <string name="patch_install">Patch &amp; install</string>
     <string name="patch_save">Patch &amp; save…</string>
+    <string name="apply_install">Apply &amp; install</string>
+    <string name="apply_save">Apply &amp; save…</string>
     <string name="self_test">Run bridge self test (bundled 32-bit ARM code)</string>
     <string name="device_info">Device ABIs: %1$s\n32-bit apps natively supported: %2$s\n%3$s</string>
     <string name="yes">yes</string>
     <string name="no">no</string>
     <string name="reading_apk">Reading APK…</string>
     <string name="analysis_failed">Could not read this file as an APK: %1$s</string>
-    <string name="verdict_already64">This APK already contains 64-bit (arm64-v8a) libraries. It does not need the bridge.</string>
-    <string name="verdict_no_native">This APK contains no native libraries. It runs on any device as it is.</string>
-    <string name="verdict_not_arm">This APK only has libraries for %1$s. Only 32-bit ARM (armeabi-v7a / armeabi) apps can be bridged.</string>
+    <string name="verdict_already64">This APK already contains 64-bit (arm64-v8a) libraries, so the bridge is not added. Only the customizations you choose below are applied.</string>
+    <string name="verdict_no_native">This APK contains no native libraries and runs on any device as it is. Only the customizations you choose below are applied.</string>
+    <string name="verdict_not_arm">This APK only has libraries for %1$s. Only 32-bit ARM (armeabi-v7a / armeabi) apps can be bridged, but the customizations below can still be applied.</string>
     <string name="verdict_ok">32-bit ARM app (%1$s) with %2$d native libraries. It can be patched.</string>
     <string name="unresolved_none">All %1$d imported system functions are covered by the bridge.</string>
     <string name="unresolved_some">%1$d of %2$d imported system functions are not implemented by the bridge yet. The app may fail when it uses them:\n%3$s</string>
@@ -29,4 +31,22 @@
     <string name="saved">Patched APK saved.</string>
     <string name="allow_install">Allow ARM64Bridge to install apps, then tap the button again.</string>
     <string name="self_test_running">Running self test…</string>
+    <string name="customize_title">Customize (optional)</string>
+    <string name="custom_label">App name (leave empty to keep it)</string>
+    <string name="custom_package">Package name (leave empty to keep it). A new package name installs the app as a separate copy next to the original; its saved data and OBB/expansion files then have to be under the new name.</string>
+    <string name="custom_orientation">Screen orientation</string>
+    <string name="custom_debuggable">Debuggable (lets tools such as adb run-as and debuggers attach)</string>
+    <string name="custom_extract_libs">Extract native libraries on install (helps some old apps that look for their .so files on disk)</string>
+    <string name="custom_permissions">Permissions (untick to remove)</string>
+    <string name="custom_permission_hint">Add a permission, e.g. android.permission.INTERNET</string>
+    <string name="custom_permission_add">Add</string>
+    <string name="custom_no_permissions">This app requests no permissions.</string>
+    <string name="bad_package">Invalid package name: use at least two parts made of letters, digits and _, e.g. com.example.game</string>
+    <string name="bad_permission">Invalid permission name</string>
+    <string name="label_is_resource">set by a resource (%1$s)</string>
+    <string name="about">About</string>
+    <string name="about_text">Version %1$s\n\nARM64Bridge makes 32-bit (armeabi-v7a) Android apps installable and runnable on 64-bit-only devices. It adds a small 64-bit runtime to the APK that runs the app\'s original 32-bit native code on an emulated ARMv7 CPU (dynarmic JIT) and translates its calls into the 64-bit system.\n\nIt can also customize any APK: app name, package name, permissions, screen orientation and more. Patched APKs are signed with a key created on this device.\n\nFree software under the GNU General Public License v2 or later.</string>
+    <string name="about_source">Source code &amp; releases</string>
+    <string name="about_close">Close</string>
+    <string name="project_url">https://github.com/mesflit/arm64bridge</string>
 </resources>

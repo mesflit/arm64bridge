@@ -31,9 +31,11 @@ The app's Java/Kotlin code, resources and UI run natively and unchanged; only na
 ## Usage
 
 1. Install the latest `arm64bridge-*.apk` from [Releases](../../releases).
-2. **Choose a 32-bit APK…** The app shows the architecture, the native libraries and any system functions the
+2. **Choose an APK…** The app shows the architecture, the native libraries and any system functions the
    bridge does not provide yet.
 3. **Patch & install** (or **Patch & save…** to get the patched APK as a file).
+   APKs that already have 64-bit libraries (or no native code at all) are not converted: only the
+   customizations you select are applied (**Apply & install** / **Apply & save…**).
 4. **Run bridge self test** runs a bundled 32-bit ARM test library through the bridge on your device.
 
 Options shown when applicable:
@@ -45,6 +47,20 @@ Options shown when applicable:
 - **In-game menu** (optional): adds a small floating button inside the game (no overlay permission needed).
   It shows the frame rate and can relax or switch off the game's own frame limiter. If a game ties its speed to
   the frame rate it will run too fast with the limiter off; switch it back in the same menu.
+  Only for apps that get the bridge.
+
+Customization (optional, works on any APK):
+
+- **App name**: the name shown in the launcher.
+- **Package name**: installs the app as a separate copy next to the original. Relative component names are made
+  absolute, and the app's own content provider authorities and permissions are moved to the new name. Saved data
+  and OBB files belong to the package name, so they have to be moved to the new name as well.
+- **Permissions**: untick a permission to remove it, or add new ones (suggestions are offered while typing).
+- **Screen orientation**: force landscape, portrait or any orientation for all activities.
+- **Debuggable**: lets `adb shell run-as` and debuggers attach.
+- **Extract native libraries**: makes the installer unpack the `.so` files to disk (helps some old apps).
+
+The **About** entry in the menu shows the version and links to this repository.
 
 Notes:
 

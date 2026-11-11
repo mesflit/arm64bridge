@@ -2,6 +2,7 @@
 package com.mesflit.arm64bridge
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.PackageInstaller
@@ -10,10 +11,17 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
 import android.provider.Settings
+import android.view.Menu
+import android.view.MenuItem
 import android.view.View
+import android.widget.ArrayAdapter
+import android.widget.AutoCompleteTextView
 import android.widget.Button
 import android.widget.CheckBox
+import android.widget.EditText
+import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.Spinner
 import android.widget.TextView
 import java.io.File
 import java.util.concurrent.Executors
@@ -28,6 +36,16 @@ class MainActivity : Activity() {
     private lateinit var raiseTarget: CheckBox
     private lateinit var legacyScaling: CheckBox
     private lateinit var inGameMenu: CheckBox
+    private lateinit var customize: View
+    private lateinit var appLabel: EditText
+    private lateinit var appPackage: EditText
+    private lateinit var orientation: Spinner
+    private lateinit var debuggable: CheckBox
+    private lateinit var extractLibs: CheckBox
+    private lateinit var permissionList: LinearLayout
+    private lateinit var newPermission: AutoCompleteTextView
+    /** Permission name to "keep" checkbox, in display order. */
+    private val permissionBoxes = LinkedHashMap<String, CheckBox>()
 
     private val inputApk get() = File(cacheDir, "input.apk")
     private val patchedApk get() = File(cacheDir, "patched.apk")
@@ -45,6 +63,17 @@ class MainActivity : Activity() {
         raiseTarget = view(R.id.raiseTargetSdk)
         legacyScaling = view(R.id.legacyScaling)
         inGameMenu = view(R.id.inGameMenu)
+        customize = view(R.id.customize)
+        appLabel = view(R.id.appLabel)
+        appPackage = view(R.id.appPackage)
+        orientation = view(R.id.orientation)
+        debuggable = view(R.id.debuggable)
+        extractLibs = view(R.id.extractNativeLibs)
+        permissionList = view(R.id.permissionList)
+        newPermission = view(R.id.newPermission)
+        orientation.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, AxmlPatcher.ORIENTATIONS.map { it.first })
+        newPermission.setAdapter(ArrayAdapter(this, android.R.layout.simple_dropdown_item_1line, COMMON_PERMISSIONS))
+        view<Button>(R.id.addPermission).setOnClickListener { addPermissionFromField() }
 
         val abis = Build.SUPPORTED_ABIS.joinToString(", ")
         val native32 = Build.SUPPORTED_32_BIT_ABIS.isNotEmpty()
@@ -120,6 +149,98 @@ class MainActivity : Activity() {
         }
     }
 
+    override fun onCreateOptionsMenu(menu: Menu): Boolean {
+        menu.add(Menu.NONE, MENU_ABOUT, Menu.NONE, R.string.about)
+        return true
+    }
+
+    override fun onOptionsItemSelected(item: MenuItem): Boolean {
+        if (item.itemId != MENU_ABOUT) return super.onOptionsItemSelected(item)
+        val version = runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull() ?: "?"
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.app_name))
+            .setIcon(R.drawable.ic_launcher)
+            .setMessage(getString(R.string.about_text, version) + "\n\n" + getString(R.string.project_url))
+            .setPositiveButton(R.string.about_close, null)
+            .setNeutralButton(R.string.about_source) { _, _ ->
+                runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(getString(R.string.project_url)))) }
+            }
+            .show()
+        return true
+    }
+
+    private fun addPermissionRow(name: String, keep: Boolean) {
+        if (permissionBoxes.containsKey(name)) {
+            permissionBoxes[name]!!.isChecked = true
+            return
+        }
+        val box = CheckBox(this).apply {
+            text = name.removePrefix("android.permission.")
+            isChecked = keep
+        }
+        permissionBoxes[name] = box
+        permissionList.addView(box)
+    }
+
+    private fun addPermissionFromField() {
+        var name = newPermission.text.toString().trim()
+        if (name.isEmpty()) return
+        if (!name.contains('.')) name = "android.permission.$name"
+        if (!name.matches(PERMISSION_REGEX)) {
+            newPermission.error = getString(R.string.bad_permission)
+            return
+        }
+        addPermissionRow(name, true)
+        newPermission.setText("")
+    }
+
+    private fun resetCustomization(a: ApkPatcher.Analysis) {
+        val info = a.manifest
+        appLabel.setText("")
+        appLabel.hint = info?.label ?: getString(R.string.label_is_resource, packageManager
+            .getPackageArchiveInfo(inputApk.path, 0)?.applicationInfo
+            ?.also { it.sourceDir = inputApk.path; it.publicSourceDir = inputApk.path }
+            ?.let { runCatching { packageManager.getApplicationLabel(it).toString() }.getOrNull() } ?: "?")
+        appPackage.setText("")
+        appPackage.hint = info?.packageName ?: ""
+        appPackage.error = null
+        orientation.setSelection(0)
+        debuggable.isChecked = false
+        extractLibs.isChecked = false
+        permissionBoxes.clear()
+        permissionList.removeAllViews()
+        info?.permissions?.forEach { addPermissionRow(it, true) }
+        if (info?.permissions.isNullOrEmpty()) {
+            permissionList.addView(TextView(this).apply { setText(R.string.custom_no_permissions) })
+        }
+        customize.visibility = if (a.customizable) View.VISIBLE else View.GONE
+    }
+
+    /** null when the form holds an invalid value (the field shows the error). */
+    private fun collectEdits(a: ApkPatcher.Analysis): AxmlPatcher.Edits? {
+        val pkg = appPackage.text.toString().trim().takeIf { it.isNotEmpty() && it != a.manifest?.packageName }
+        if (pkg != null && !pkg.matches(PACKAGE_REGEX)) {
+            appPackage.error = getString(R.string.bad_package)
+            appPackage.requestFocus()
+            return null
+        }
+        val label = appLabel.text.toString().trim().takeIf { it.isNotEmpty() && it != a.manifest?.label }
+        val original = a.manifest?.permissions?.toSet() ?: emptySet()
+        val remove = permissionBoxes.filter { !it.value.isChecked && it.key in original }.keys
+        val add = permissionBoxes.filter { it.value.isChecked && it.key !in original }.keys.toList()
+        return AxmlPatcher.Edits(
+            raiseTargetSdkTo = if (raiseTarget.isChecked && raiseTarget.visibility == View.VISIBLE) ApkPatcher.minInstallableTargetSdk() else null,
+            disableAnyDensity = legacyScaling.isChecked,
+            label = label,
+            packageName = pkg,
+            removePermissions = remove,
+            addPermissions = add,
+            screenOrientation = AxmlPatcher.ORIENTATIONS.getOrNull(orientation.selectedItemPosition)?.second,
+            debuggable = debuggable.isChecked,
+            extractNativeLibs = extractLibs.isChecked,
+        )
+    }
+
     private fun showAnalysis(a: ApkPatcher.Analysis) {
         analysis = a
         val sb = StringBuilder()
@@ -146,19 +267,22 @@ class MainActivity : Activity() {
         apkInfo.text = sb
         val floor = ApkPatcher.minInstallableTargetSdk()
         val effectiveTarget = a.targetSdk ?: a.minSdk ?: 1
-        val needsRaise = a.patchable && floor > 0 && effectiveTarget < floor
+        val needsRaise = a.customizable && floor > 0 && effectiveTarget < floor
         raiseTarget.visibility = if (needsRaise) View.VISIBLE else View.GONE
         raiseTarget.isChecked = needsRaise
         raiseTarget.text = getString(R.string.raise_target_sdk, floor)
-        legacyScaling.visibility = if (a.patchable) View.VISIBLE else View.GONE
+        legacyScaling.visibility = if (a.customizable) View.VISIBLE else View.GONE
         legacyScaling.isChecked = false
-        inGameMenu.visibility = if (a.patchable) View.VISIBLE else View.GONE
+        inGameMenu.visibility = if (a.needsBridge) View.VISIBLE else View.GONE
         inGameMenu.isChecked = false
+        installButton.setText(if (a.needsBridge) R.string.patch_install else R.string.apply_install)
+        saveButton.setText(if (a.needsBridge) R.string.patch_save else R.string.apply_save)
+        resetCustomization(a)
         updateButtons()
     }
 
     private fun updateButtons() {
-        val ok = analysis?.patchable == true
+        val ok = analysis?.customizable == true
         installButton.isEnabled = ok
         saveButton.isEnabled = ok
     }
@@ -176,12 +300,10 @@ class MainActivity : Activity() {
 
     /** Produces the patched APK on the worker thread, then runs [next] on the UI thread. */
     private fun patchThen(next: () -> Unit) {
-        if (analysis?.patchable != true) return
-        val options = ApkPatcher.Options(
-            if (raiseTarget.isChecked && raiseTarget.visibility == View.VISIBLE) ApkPatcher.minInstallableTargetSdk() else null,
-            legacyScaling.isChecked && legacyScaling.visibility == View.VISIBLE,
-            inGameMenu.isChecked && inGameMenu.visibility == View.VISIBLE
-        )
+        val a = analysis ?: return
+        if (!a.customizable) return
+        val edits = collectEdits(a) ?: return
+        val options = ApkPatcher.Options(edits, a.needsBridge && inGameMenu.isChecked)
         setBusy(true)
         progress.isIndeterminate = false
         log.setText(R.string.patching)
@@ -285,5 +407,16 @@ class MainActivity : Activity() {
         private const val REQUEST_PICK = 1
         private const val REQUEST_SAVE = 2
         private const val ACTION_INSTALL_STATUS = "com.mesflit.arm64bridge.INSTALL_STATUS"
+        private const val MENU_ABOUT = 1
+        private val PACKAGE_REGEX = Regex("^[a-zA-Z][a-zA-Z0-9_]*(\\.[a-zA-Z][a-zA-Z0-9_]*)+$")
+        private val PERMISSION_REGEX = Regex("^[a-zA-Z][a-zA-Z0-9_]*(\\.[a-zA-Z0-9_]+)+$")
+        private val COMMON_PERMISSIONS = listOf(
+            "INTERNET", "ACCESS_NETWORK_STATE", "ACCESS_WIFI_STATE", "VIBRATE", "WAKE_LOCK",
+            "READ_EXTERNAL_STORAGE", "WRITE_EXTERNAL_STORAGE", "READ_MEDIA_IMAGES", "READ_MEDIA_AUDIO", "READ_MEDIA_VIDEO",
+            "POST_NOTIFICATIONS", "CAMERA", "RECORD_AUDIO", "ACCESS_FINE_LOCATION", "ACCESS_COARSE_LOCATION",
+            "READ_PHONE_STATE", "GET_ACCOUNTS", "BLUETOOTH", "BLUETOOTH_CONNECT", "FOREGROUND_SERVICE",
+            "RECEIVE_BOOT_COMPLETED", "SYSTEM_ALERT_WINDOW", "REQUEST_INSTALL_PACKAGES", "SCHEDULE_EXACT_ALARM",
+            "com.android.vending.BILLING", "com.android.vending.CHECK_LICENSE",
+        ).map { if (it.contains('.')) it else "android.permission.$it" }
     }
 }

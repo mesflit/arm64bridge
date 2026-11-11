@@ -38,14 +38,19 @@ class ApkPatcher(private val context: Context) {
         val guestLibs: List<String>,
         val importCount: Int,
         val unresolved: List<String>,
-        val minSdk: Int?,
-        val targetSdk: Int?,
+        val manifest: AxmlPatcher.Info?,
     ) {
+        val minSdk get() = manifest?.minSdk
+        val targetSdk get() = manifest?.targetSdk
         val has64 get() = "arm64-v8a" in abis
-        val patchable get() = guestAbi != null && !has64
+        /** 32-bit ARM code that this device cannot run: the bridge is added. */
+        val needsBridge get() = guestAbi != null && !has64
+        /** Every readable APK can be customized (re-signed with the selected changes). */
+        val customizable get() = manifest != null
     }
 
-    class Options(val raiseTargetSdkTo: Int?, val legacyScreenScaling: Boolean = false, val inGameMenu: Boolean = false)
+    /** [inGameMenu] only applies to apps that get the bridge (the menu runs inside the bridge runtime). */
+    class Options(val manifest: AxmlPatcher.Edits, val inGameMenu: Boolean = false)
 
     fun analyze(apk: File): Analysis {
         ZipFile(apk).use { zip ->
@@ -77,10 +82,10 @@ class ApkPatcher(private val context: Context) {
             unresolved.removeAll(exported)
 
             val manifest = zip.getEntry("AndroidManifest.xml")?.let { e -> zip.getInputStream(e).use { it.readBytes() } }
-            val sdk = manifest?.let { AxmlPatcher.readSdk(it) }
+            val info = manifest?.let { runCatching { AxmlPatcher.info(it) }.getOrNull() }
             return Analysis(
                 abis, guestAbi, guestEntries.map { it.name.substringAfterLast('/') },
-                imports, unresolved.toList(), sdk?.minSdk, sdk?.targetSdk
+                imports, unresolved.toList(), info
             )
         }
     }
@@ -88,12 +93,13 @@ class ApkPatcher(private val context: Context) {
     /** Writes the patched and signed APK to [output]. [progress] receives values from 0 to 100. */
     fun patch(input: File, output: File, options: Options, progress: (Int) -> Unit) {
         val analysis = analyze(input)
-        check(analysis.patchable) { "not a 32-bit ARM app" }
+        check(analysis.customizable) { "this file has no readable AndroidManifest.xml" }
+        val bridge = analysis.needsBridge
         val nativeDir = File(context.applicationInfo.nativeLibraryDir)
         val runtime = File(nativeDir, "libarm64bridge.so")
         val shim = File(nativeDir, "liba64bshim.so")
-        check(runtime.isFile && shim.isFile) { "bridge runtime libraries are missing from $nativeDir" }
-        val shimBytes = shim.readBytes()
+        if (bridge) check(runtime.isFile && shim.isFile) { "bridge runtime libraries are missing from $nativeDir" }
+        val shimBytes = if (bridge) shim.readBytes() else ByteArray(0)
 
         val unsigned = File(output.parentFile, output.name + ".unsigned")
         try {
@@ -106,15 +112,11 @@ class ApkPatcher(private val context: Context) {
                         progress(index * 80 / entries.size.coerceAtLeast(1))
                         val name = entry.name
                         if (entry.isDirectory || !seen.add(name)) continue
-                        if (isSignatureFile(name) || name.startsWith("lib/arm64-v8a/") || name.startsWith(MENU_ASSETS)) continue
-                        if (name == "AndroidManifest.xml" && (options.raiseTargetSdkTo != null || options.legacyScreenScaling)) {
-                            var manifest = zip.getInputStream(entry).use { it.readBytes() }
-                            if (options.raiseTargetSdkTo != null) {
-                                manifest = AxmlPatcher.raiseTargetSdk(manifest, options.raiseTargetSdkTo)
-                                    ?: error("this manifest has no SDK version that could be raised")
-                            }
-                            if (options.legacyScreenScaling) manifest = AxmlPatcher.disableAnyDensity(manifest)
-                            writeDeflated(out, name, manifest)
+                        if (isSignatureFile(name) || name.startsWith(MENU_ASSETS)) continue
+                        if (bridge && name.startsWith("lib/arm64-v8a/")) continue
+                        if (name == "AndroidManifest.xml" && !options.manifest.isEmpty) {
+                            val manifest = zip.getInputStream(entry).use { it.readBytes() }
+                            writeDeflated(out, name, AxmlPatcher.apply(manifest, options.manifest))
                             continue
                         }
                         if (entry.method == ZipEntry.STORED) {
@@ -137,7 +139,7 @@ class ApkPatcher(private val context: Context) {
                             out.closeEntry()
                         }
                     }
-                    if (options.inGameMenu) {
+                    if (bridge && options.inGameMenu) {
                         // The in-game menu is a class of this app; the runtime loads it from these copies of our dex.
                         ZipFile(context.applicationInfo.sourceDir).use { self ->
                             for (dex in self.entries().asSequence().filter { it.name.matches(Regex("classes\\d*\\.dex")) }) {
@@ -145,11 +147,13 @@ class ApkPatcher(private val context: Context) {
                             }
                         }
                     }
-                    // The bridge runtime plus one shim per original library.
-                    writeStoredAligned(out, counter, "lib/arm64-v8a/libarm64bridge.so", runtime.readBytes())
-                    for (lib in analysis.guestLibs) {
-                        if (lib == "libarm64bridge.so") continue
-                        writeStoredAligned(out, counter, "lib/arm64-v8a/$lib", shimBytes)
+                    if (bridge) {
+                        // The bridge runtime plus one shim per original library.
+                        writeStoredAligned(out, counter, "lib/arm64-v8a/libarm64bridge.so", runtime.readBytes())
+                        for (lib in analysis.guestLibs) {
+                            if (lib == "libarm64bridge.so") continue
+                            writeStoredAligned(out, counter, "lib/arm64-v8a/$lib", shimBytes)
+                        }
                     }
                 }
             }
