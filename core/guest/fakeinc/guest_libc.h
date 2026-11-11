@@ -52,7 +52,8 @@ int inflateEnd(z_stream*);
 #define deflateInit(s, l) deflateInit_((s), (l), ZLIB_VERSION, (int)sizeof(z_stream))
 #define inflateInit2(s, w) inflateInit2_((s), (w), ZLIB_VERSION, (int)sizeof(z_stream))
 /* epoll / eventfd */
-struct epoll_event { uint32_t events; uint64_t data; };
+typedef union epoll_data { void* ptr; int fd; uint32_t u32; uint64_t u64; } epoll_data_t;
+struct epoll_event { uint32_t events; epoll_data_t data; };
 #define EPOLLIN 1
 #define EPOLL_CTL_ADD 1
 int epoll_create(int);

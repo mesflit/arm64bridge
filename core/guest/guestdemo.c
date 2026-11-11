@@ -257,10 +257,10 @@ JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_posix(JNIEnv* env,
     struct epoll_event ev, out[2];
     memset(&ev, 0, sizeof(ev));
     ev.events = EPOLLIN;
-    ev.data = 0x1122334455667788ULL;
+    ev.data.u64 = 0x1122334455667788ULL;
     uint64_t one = 1;
     if (efd >= 0 && ep >= 0 && epoll_ctl(ep, EPOLL_CTL_ADD, efd, &ev) == 0 && write(efd, &one, 8) == 8 &&
-        epoll_wait(ep, out, 2, 1000) == 1 && out[0].data == 0x1122334455667788ULL && (out[0].events & EPOLLIN))
+        epoll_wait(ep, out, 2, 1000) == 1 && out[0].data.u64 == 0x1122334455667788ULL && (out[0].events & EPOLLIN))
         score += 8;
     if (efd >= 0) close(efd);
     if (ep >= 0) close(ep);
