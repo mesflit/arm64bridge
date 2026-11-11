@@ -8,7 +8,8 @@ OUT="${1:-$ROOT/build/host-test}"
 JAVA_HOME="${JAVA_HOME:-$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")}"
 mkdir -p "$OUT/guest" "$OUT/shims" "$OUT/classes"
 
-cmake -S "$ROOT/core" -B "$OUT/cmake" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+GEN=Ninja; command -v ninja >/dev/null || GEN="Unix Makefiles"
+cmake -S "$ROOT/core" -B "$OUT/cmake" -G "$GEN" -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ ${A64B_CMAKE_ARGS:-}
 cmake --build "$OUT/cmake"
 

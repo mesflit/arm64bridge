@@ -17,8 +17,11 @@ if(A64B_SYSTEM_DYNARMIC)
   target_link_libraries(dynarmic INTERFACE ${DYNARMIC_LIBRARY})
 else()
   include(FetchContent)
-  if(ANDROID)
-    # dynarmic needs the Boost headers; the NDK has none.
+  if(NOT ANDROID)
+    find_package(Boost 1.57 QUIET)
+  endif()
+  if(ANDROID OR NOT Boost_FOUND)
+    # dynarmic needs the Boost headers; the NDK has none (and a desktop may not either).
     FetchContent_Declare(boost_headers
       URL https://archives.boost.io/release/1.84.0/source/boost_1_84_0.tar.bz2)
     FetchContent_Populate(boost_headers)
