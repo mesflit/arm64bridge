@@ -40,6 +40,14 @@
             android:text="@string/raise_target_sdk"
             android:visibility="gone" />
 
+        <CheckBox
+            android:id="@+id/legacyScaling"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/legacy_scaling"
+            android:visibility="gone" />
+
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

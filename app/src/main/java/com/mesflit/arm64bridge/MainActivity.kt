@@ -26,6 +26,7 @@ class MainActivity : Activity() {
     private lateinit var installButton: Button
     private lateinit var saveButton: Button
     private lateinit var raiseTarget: CheckBox
+    private lateinit var legacyScaling: CheckBox
 
     private val inputApk get() = File(cacheDir, "input.apk")
     private val patchedApk get() = File(cacheDir, "patched.apk")
@@ -41,6 +42,7 @@ class MainActivity : Activity() {
         installButton = view(R.id.installButton)
         saveButton = view(R.id.saveButton)
         raiseTarget = view(R.id.raiseTargetSdk)
+        legacyScaling = view(R.id.legacyScaling)
 
         val abis = Build.SUPPORTED_ABIS.joinToString(", ")
         val native32 = Build.SUPPORTED_32_BIT_ABIS.isNotEmpty()
@@ -146,6 +148,8 @@ class MainActivity : Activity() {
         raiseTarget.visibility = if (needsRaise) View.VISIBLE else View.GONE
         raiseTarget.isChecked = needsRaise
         raiseTarget.text = getString(R.string.raise_target_sdk, floor)
+        legacyScaling.visibility = if (a.patchable) View.VISIBLE else View.GONE
+        legacyScaling.isChecked = false
         updateButtons()
     }
 
@@ -169,7 +173,10 @@ class MainActivity : Activity() {
     /** Produces the patched APK on the worker thread, then runs [next] on the UI thread. */
     private fun patchThen(next: () -> Unit) {
         if (analysis?.patchable != true) return
-        val options = ApkPatcher.Options(if (raiseTarget.isChecked && raiseTarget.visibility == View.VISIBLE) ApkPatcher.minInstallableTargetSdk() else null)
+        val options = ApkPatcher.Options(
+            if (raiseTarget.isChecked && raiseTarget.visibility == View.VISIBLE) ApkPatcher.minInstallableTargetSdk() else null,
+            legacyScaling.isChecked && legacyScaling.visibility == View.VISIBLE
+        )
         setBusy(true)
         progress.isIndeterminate = false
         log.setText(R.string.patching)

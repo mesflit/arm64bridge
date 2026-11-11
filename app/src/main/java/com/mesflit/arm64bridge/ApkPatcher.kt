@@ -45,7 +45,7 @@ class ApkPatcher(private val context: Context) {
         val patchable get() = guestAbi != null && !has64
     }
 
-    class Options(val raiseTargetSdkTo: Int?)
+    class Options(val raiseTargetSdkTo: Int?, val legacyScreenScaling: Boolean = false)
 
     fun analyze(apk: File): Analysis {
         ZipFile(apk).use { zip ->
@@ -107,11 +107,14 @@ class ApkPatcher(private val context: Context) {
                         val name = entry.name
                         if (entry.isDirectory || !seen.add(name)) continue
                         if (isSignatureFile(name) || name.startsWith("lib/arm64-v8a/")) continue
-                        if (name == "AndroidManifest.xml" && options.raiseTargetSdkTo != null) {
-                            val original = zip.getInputStream(entry).use { it.readBytes() }
-                            val patched = AxmlPatcher.raiseTargetSdk(original, options.raiseTargetSdkTo)
-                                ?: error("this manifest has no SDK version that could be raised")
-                            writeDeflated(out, name, patched)
+                        if (name == "AndroidManifest.xml" && (options.raiseTargetSdkTo != null || options.legacyScreenScaling)) {
+                            var manifest = zip.getInputStream(entry).use { it.readBytes() }
+                            if (options.raiseTargetSdkTo != null) {
+                                manifest = AxmlPatcher.raiseTargetSdk(manifest, options.raiseTargetSdkTo)
+                                    ?: error("this manifest has no SDK version that could be raised")
+                            }
+                            if (options.legacyScreenScaling) manifest = AxmlPatcher.disableAnyDensity(manifest)
+                            writeDeflated(out, name, manifest)
                             continue
                         }
                         if (entry.method == ZipEntry.STORED) {
