@@ -30,18 +30,17 @@ jobs:
       - name: Build and test
         run: core/test/run-host-test.sh
 
-  # Same tests on an ARM64 machine, i.e. the host architecture of Android devices.
-  # Informational: it does not gate the APK or the release.
+  # Same tests on an ARM64 machine: this exercises the recompiler backend that Android devices use,
+  # so the APK and the release depend on it.
   core-test-arm64:
     name: Bridge tests (arm64 host)
     runs-on: ubuntu-24.04-arm
-    continue-on-error: true
     steps: *test-steps
 
   apk:
     name: Android APK
     runs-on: ubuntu-24.04
-    needs: core-test
+    needs: [core-test, core-test-arm64]
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:

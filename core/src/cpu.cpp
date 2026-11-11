@@ -345,7 +345,7 @@ void Cpu::on_svc(u32 swi) {
 
 u64 Cpu::call(u32 fn, const u32* words, size_t nwords) {
     if (!fn) fatal("attempt to call a NULL guest function");
-    if ((size_t)depth == levels.size()) levels.push_back(new CpuLevel(*this, depth == 0 ? 256u << 20 : 32u << 20));
+    if ((size_t)depth == levels.size()) levels.push_back(new CpuLevel(*this, depth == 0 ? 128u << 20 : 32u << 20));
     CpuLevel* lvl = levels[depth];
     auto& regs = lvl->jit->Regs();
 
