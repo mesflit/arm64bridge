@@ -1,5 +1,6 @@
 // liblog, libandroid (assets, native window), EGL.
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include <sys/resource.h>
 #include <unistd.h>
 
 #include <mutex>
@@ -357,6 +358,14 @@ void register_android_thunks() {
     reg("eglSwapBuffers", +[](u32 d, u32 s) -> u32 {
         g_frames.fetch_add(1, std::memory_order_relaxed);
         g_render_tid.store((int)gettid(), std::memory_order_relaxed);
+        static thread_local bool boosted = false;
+        if (!boosted) {
+            // The thread that presents frames gets display priority, like Android's own RenderThread.
+            boosted = true;
+            int r = setpriority(PRIO_PROCESS, 0, -10);
+            if (r != 0) r = setpriority(PRIO_PROCESS, 0, -8);
+            LOGI("render thread %d: priority %s", (int)gettid(), r == 0 ? "raised to display level" : "unchanged (not permitted)");
+        }
         return eglSwapBuffers(ptr_host(d), ptr_host(s));
     });
     reg("eglGetCurrentContext", +[]() -> u32 { return ptr_token(eglGetCurrentContext()); });

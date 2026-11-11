@@ -13,6 +13,8 @@ namespace a64b {
 
 bool jni_bridge_init(JavaVM* vm);
 JavaVM* jni_host_vm();
+// Called when a guest thread ends: detaches it from the JVM if it is still attached.
+void jni_thread_exit(Cpu& c);
 // Host JNIEnv of the calling thread (attaches lazily through GetEnv).
 JNIEnv* jni_host_env(Cpu& c);
 u32 jni_new_local(Cpu& c, jobject obj);

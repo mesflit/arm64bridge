@@ -77,6 +77,7 @@ bool clear_exc(JNIEnv* env) {
 
 std::string jstr(JNIEnv* env, jstring s);
 long long thread_cpu_ticks(int tid);
+int thread_cpu_core(int tid);
 
 jobject current_application(JNIEnv* env) {
     jclass at = env->FindClass("android/app/ActivityThread");
@@ -211,8 +212,8 @@ void open_log_file(JNIEnv* env) {
                 }
                 int render_pct = (tid && tid == last_tid && ticks >= 0) ? (int)((ticks - last_ticks) * 100 / (5 * hz)) : -1;
                 int proc_pct = last_proc ? (int)((proc - last_proc) * 100 / (5 * hz)) : -1;
-                LOGI("heartbeat: %.1f fps, render thread CPU %d%%, process CPU %d%%, %llu guest->host calls/s, %d guest threads; Java->native: %s",
-                     (f - last_frames) / 5.0, render_pct, proc_pct, (unsigned long long)((k - last_calls) / 5),
+                LOGI("heartbeat: %.1f fps, render thread CPU %d%% (core %d), process CPU %d%%, %llu guest->host calls/s, %d guest threads; Java->native: %s",
+                     (f - last_frames) / 5.0, render_pct, tid ? thread_cpu_core(tid) : -1, proc_pct, (unsigned long long)((k - last_calls) / 5),
                      g_guest_threads.load(), jni_call_stats().c_str());
                 if (tid) {
                     std::string prof = cpu_profile_report(tid, 5.0);
@@ -230,6 +231,27 @@ void open_log_file(JNIEnv* env) {
              static_string(env, "android/os/Build", "MODEL").c_str(), static_string(env, "android/os/Build$VERSION", "RELEASE").c_str(),
              static_int(env, "android/os/Build$VERSION", "SDK_INT"));
     });
+}
+
+// CPU core a thread last ran on (field 39 of /proc/<pid>/task/<tid>/stat), or -1.
+int thread_cpu_core(int tid) {
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/self/task/%d/stat", tid);
+    FILE* f = fopen(path, "re");
+    if (!f) return -1;
+    char buf[1024];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = 0;
+    const char* p = strrchr(buf, ')');
+    if (!p) return -1;
+    int field = 2;  // ")" ends field 2
+    for (const char* q = p + 1; *q; q++) {
+        if (*q != ' ') continue;
+        field++;
+        if (field == 39) return atoi(q + 1);
+    }
+    return -1;
 }
 
 // CPU time (user + system, in clock ticks) a thread of this process has used so far.

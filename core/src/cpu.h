@@ -49,6 +49,8 @@ struct Cpu {
     u64 fault_addr = 0;     // address of the last invalid guest memory access
     int fault_type = 0;     // 1 = read, 2 = write
     bool crash_reported = false;
+    bool guest_thread = false;    // created by the guest with pthread_create
+    bool detach_deferred = false; // guest asked to detach from the JVM; done when the thread ends
     bool exit_pending = false;  // pthread_exit was called; unwind out of the JIT first
     u32 exit_value = 0;
     // Most recent host functions called by guest code on this thread (ring buffer of trap slots).

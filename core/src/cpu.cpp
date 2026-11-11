@@ -205,7 +205,10 @@ struct CpuLevel final : Dynarmic::A32::UserCallbacks {
         // Guest address == host address, so a memory access can be a single host instruction
         // (fastmem with base 0). Older dynarmic versions cannot express base 0; they use the
         // identity page table instead.
-        if (!set_fastmem_base0(cfg.fastmem_pointer)) cfg.page_table = g_page_table;
+        const bool fastmem = set_fastmem_base0(cfg.fastmem_pointer);
+        if (!fastmem) cfg.page_table = g_page_table;
+        static std::once_flag logged;
+        std::call_once(logged, [fastmem] { LOGI("recompiler: dynarmic, guest memory %s", fastmem ? "direct (fastmem)" : "through page table"); });
         // Games do not depend on exact NaN payloads or FMA fusing; these make VFP/NEON code cheaper.
         cfg.unsafe_optimizations = true;
         cfg.optimizations |= Dynarmic::OptimizationFlag::Unsafe_UnfuseFMA | Dynarmic::OptimizationFlag::Unsafe_InaccurateNaN |

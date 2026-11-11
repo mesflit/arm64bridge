@@ -9,6 +9,7 @@
 #include <signal.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
@@ -604,9 +605,13 @@ void register_libc_thunks() {
     reg("sched_get_priority_min", +[](int p) -> int { return sched_get_priority_min(p); });
     reg("sched_setscheduler", +[](int, int, void*) -> int { return 0; });
     reg("sched_setaffinity", +[](int, u32, void*) -> int { return 0; });
-    reg("setpriority", +[](int, int, int) -> int { return 0; });
+    reg("setpriority", +[](int which, int who, int prio) -> int {
+        // Thread priorities matter on phones: the scheduler keeps busy, high-priority threads on fast cores.
+        if (setpriority(which, who, prio) == 0) return 0;
+        return 0;  // not permitted at this level: behave as before (succeed silently)
+    });
     reg("getpriority", +[](int, int) -> int { return 0; });
-    reg("nice", +[](int) -> int { return 0; });
+    reg("nice", +[](int inc) -> int { errno = 0; int r = nice(inc); return (r == -1 && errno) ? 0 : r; });
     reg("prctl", +[](int, u32, u32, u32, u32) -> int { return 0; });
     reg("getrlimit", +[](int, u32* out) -> int { out[0] = out[1] = 0x7fffffff; return 0; });
     reg("setrlimit", +[](int, void*) -> int { return 0; });

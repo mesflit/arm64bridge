@@ -96,6 +96,23 @@ IdInfo* id_info(u32 tok) {
 
 JavaVM* jni_host_vm() { return g_vm; }
 
+void jni_thread_exit(Cpu& c) {
+    if (!g_vm) return;
+    JNIEnv* env = nullptr;
+    if (g_vm->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK || !env) return;
+    for (void* o : c.locals)
+        if (o) env->DeleteLocalRef(static_cast<jobject>(o));
+    c.locals.clear();
+    c.local_serials.clear();
+    for (auto& kv : c.kept_last) env->DeleteGlobalRef(static_cast<jobject>(kv.second));
+    c.kept_last.clear();
+    c.kept_refs.clear();
+    c.kept_unique.clear();
+    c.kept_alias.clear();
+    g_vm->DetachCurrentThread();
+    c.host_env = nullptr;
+}
+
 JNIEnv* jni_host_env(Cpu& c) {
     if (!c.host_env && g_vm) {
         JNIEnv* env = nullptr;
@@ -482,12 +499,26 @@ void vm_attach(Cpu& c, void* ud) {
 #endif
     if (rc == JNI_OK) {
         c.host_env = env;
+        c.detach_deferred = false;
         if (penv) *g2h<u32>(penv) = guest_env_for(c);
     }
     c.set_ret32((u32)rc);
 }
 
 void vm_detach(Cpu& c, void*) {
+    if (c.guest_thread && c.host_env) {
+        // Games often attach and detach a thread around every Java call (several times per frame).
+        // Attaching creates a java.lang.Thread each time, so keep guest threads attached until they
+        // end, and only release what a real detach would release: the thread's local references.
+        JNIEnv* env = static_cast<JNIEnv*>(c.host_env);
+        for (void* o : c.locals)
+            if (o) env->DeleteLocalRef(static_cast<jobject>(o));
+        c.locals.clear();
+        c.local_serials.clear();
+        c.detach_deferred = true;
+        c.set_ret32(JNI_OK);
+        return;
+    }
     jint rc = g_vm->DetachCurrentThread();
     c.host_env = nullptr;
     c.locals.clear();

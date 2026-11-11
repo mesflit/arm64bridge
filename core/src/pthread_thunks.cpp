@@ -11,6 +11,7 @@
 #include <mutex>
 
 #include "guest_types.h"
+#include "jni_bridge.h"
 #include "thunk.h"
 
 namespace a64b {
@@ -173,6 +174,7 @@ void* thread_main(void* p) {
     ThreadRec* t = g_threads.get(id);
     Cpu& c = Cpu::current();
     c.thread_id = id;
+    c.guest_thread = true;
     g_guest_threads.fetch_add(1);
     u32 ret = 0;
     try {
@@ -185,6 +187,7 @@ void* thread_main(void* p) {
         run_key_destructors(c);
     } catch (const ThreadExit&) {
     }
+    jni_thread_exit(c);
     t->retval.store(ret);
     g_guest_threads.fetch_sub(1);
     return nullptr;
