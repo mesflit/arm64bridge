@@ -4,6 +4,7 @@
 #include "thunk.h"
 
 #ifdef __ANDROID__
+#define GL_GLEXT_PROTOTYPES 1  // declare the extension functions in glext.h / gl2ext.h
 #include <GLES/gl.h>
 #include <GLES/glext.h>
 #include <GLES2/gl2.h>
