@@ -44,6 +44,11 @@ const int kDRegs[8] = {UC_ARM_REG_D8, UC_ARM_REG_D9, UC_ARM_REG_D10, UC_ARM_REG_
 
 // jmp_buf layout used by the bridge: [0..7] r4-r11, [8] sp, [9] lr, [10] magic, [12..27] d8-d15
 void do_setjmp(Cpu& c) {
+    static const int kCallee[8] = {UC_ARM_REG_R4, UC_ARM_REG_R5, UC_ARM_REG_R6, UC_ARM_REG_R7,
+                                   UC_ARM_REG_R8, UC_ARM_REG_R9, UC_ARM_REG_R10, UC_ARM_REG_R11};
+    void* ptrs[8];
+    for (int i = 0; i < 8; i++) ptrs[i] = &c.r[4 + i];
+    uc_reg_read_batch(c.uc, const_cast<int*>(kCallee), ptrs, 8);  // only r0-r3/sp/lr are loaded for host calls
     u32* buf = g2h<u32>(c.r[0]);
     for (int i = 0; i < 8; i++) buf[i] = c.r[4 + i];
     buf[8] = c.r[13];

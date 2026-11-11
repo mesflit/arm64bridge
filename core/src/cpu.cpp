@@ -99,8 +99,13 @@ u32 trap_create(const char* name, TrapFn fn, void* ud) {
     std::string_view n = name ? name : "";
     bool slow = n == "pthread_exit" || n == "longjmp" || n == "_longjmp" || n == "siglongjmp";
     g_traps[idx] = TrapEntry{fn, ud, name ? strdup(name) : "?", name && is_fast_trap(name), slow};
+    std::atomic_thread_fence(std::memory_order_release);
+    if (g_trap_base && g_return_trap && !slow) g2h<u32>(g_trap_base + idx * kStubSize)[0] = 0xE12FFF1E;  // bx lr
     return g_trap_base + idx * kStubSize;
 }
+
+u32 trap_area_begin() { return g_trap_base; }
+u32 trap_area_end() { return g_trap_base + kMaxTraps * kStubSize; }
 
 const char* trap_name_by_index(u32 idx) { return idx < g_trap_count.load() ? g_traps[idx].name : nullptr; }
 
@@ -118,10 +123,10 @@ bool cpu_global_init() {
     u32 base = page_alloc(kMaxTraps * kStubSize, true);
     if (!base) return false;
     u32* p = g2h<u32>(base);
-    for (u32 i = 0; i < kMaxTraps; i++) {
-        p[i * 2] = 0xEF000000;      // svc #0
-        p[i * 2 + 1] = 0xE12FFF1E;  // bx lr
-    }
+    // Every slot starts as "b ." and becomes "bx lr" when a host function is assigned. A code hook
+    // on this range calls the host function before the instruction executes; slots that must stop
+    // the emulator (return trap, pthread_exit, longjmp) stay "b ." so nothing runs after the stop.
+    for (u32 i = 0; i < kMaxTraps * 2; i++) p[i] = 0xEAFFFFFE;
     g_trap_base = base;
     g_return_trap = trap_create("<return>", return_trap, nullptr);
     return true;
@@ -219,6 +224,8 @@ const int kAllRegs[17] = {UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2,  UC_ARM_R
                           UC_ARM_REG_R6, UC_ARM_REG_R7, UC_ARM_REG_R8,  UC_ARM_REG_R9,  UC_ARM_REG_R10, UC_ARM_REG_R11,
                           UC_ARM_REG_R12, UC_ARM_REG_SP, UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_CPSR};
 
+void trap_hook(uc_engine*, uint64_t addr, uint32_t, void* user) { static_cast<Cpu*>(user)->on_trap((u32)addr); }
+
 void intr_hook(uc_engine* uc, uint32_t intno, void* user) {
     Cpu* c = static_cast<Cpu*>(user);
     if (intno == 2 /* EXCP_SWI */) {
@@ -272,6 +279,9 @@ Cpu::Cpu() {
     if (e != UC_ERR_OK) fatal("uc_hook_add: %s", uc_strerror(e));
     e = uc_hook_add(uc, &hh, UC_HOOK_MEM_INVALID, (void*)mem_fault_hook, this, 1, 0);
     if (e != UC_ERR_OK) fatal("uc_hook_add: %s", uc_strerror(e));
+    // Only code translated from the stub area gets the hook call; the game's own code is unaffected.
+    e = uc_hook_add(uc, &hh, UC_HOOK_CODE, (void*)trap_hook, this, trap_area_begin(), trap_area_end() - 1);
+    if (e != UC_ERR_OK) fatal("uc_hook_add: %s", uc_strerror(e));
 
     // Enable VFP/NEON: CPACR.cp10/cp11 = full access, FPEXC.EN = 1.
     u32 v = 0x00F00000;
@@ -307,6 +317,13 @@ void Cpu::load_regs() {
     for (int i = 0; i < 16; i++) ptrs[i] = &r[i];
     ptrs[16] = &cpsr;
     uc_reg_read_batch(uc, const_cast<int*>(kAllRegs), ptrs, 17);
+}
+
+void Cpu::load_call_regs() {
+    static const int ids[7] = {UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R3,
+                               UC_ARM_REG_SP, UC_ARM_REG_LR, UC_ARM_REG_PC};
+    void* ptrs[7] = {&r[0], &r[1], &r[2], &r[3], &r[13], &r[14], &r[15]};
+    uc_reg_read_batch(uc, const_cast<int*>(ids), ptrs, 7);
 }
 
 void Cpu::store_regs(bool all) {
@@ -384,32 +401,39 @@ void Cpu::dispatch_trap(u32 idx) {
     }
 }
 
+void Cpu::on_trap(u32 addr) {
+    u32 idx = (addr - g_trap_base) / kStubSize;
+    if (idx >= g_trap_count.load(std::memory_order_acquire) || (addr - g_trap_base) % kStubSize) {
+        load_regs();
+        guest_crash(*this, "jump into the trap area");
+    }
+    TrapEntry& t = g_traps[idx];
+    if (addr == g_return_trap || t.slow) {
+        trap_pending = true;
+        pending_idx = idx;
+        uc_emu_stop(uc);
+        return;
+    }
+    load_call_regs();
+    dispatch_trap(idx);
+    store_regs(false);
+    if (epoch != mem_code_epoch()) uc_emu_stop(uc);  // the run loop flushes stale translations
+    gil_maybe_yield(this);
+    // The stub's "bx lr" now returns to the caller.
+}
+
 // Host calls are handled inside the SVC exception hook: the emulator keeps running, which is
 // far cheaper than stopping and restarting it for each of the ~10^5 calls per second a game makes.
 void Cpu::on_swi() {
+    // A raw Linux system call ("svc 0") made by guest code.
     load_regs();
-    bool thumb = (cpsr >> 5) & 1;
-    u32 svc_addr = r[15] - (thumb ? 2 : 4);
-    if (!thumb && svc_addr >= g_trap_base && svc_addr < g_trap_base + kMaxTraps * kStubSize) {
-        u32 idx = (svc_addr - g_trap_base) / kStubSize;
-        TrapEntry& t = g_traps[idx];
-        if (svc_addr == g_return_trap || t.slow || !t.fn) {
-            trap_pending = true;  // handled by the run loop after the emulator has stopped
-            uc_emu_stop(uc);
-            return;
-        }
-        dispatch_trap(idx);
-        store_regs(regs_dirty);
-        // Execution continues with the "bx lr" that follows the SVC in the stub.
-    } else {
-        regs_dirty = false;
-        {
-            GilUnlock unlocked(this);
-            r[0] = guest_syscall(*this, r[7]);
-        }
-        store_regs(regs_dirty);
+    regs_dirty = false;
+    {
+        GilUnlock unlocked(this);
+        r[0] = guest_syscall(*this, r[7]);
     }
-    if (epoch != mem_code_epoch()) uc_emu_stop(uc);  // the run loop flushes stale translations
+    store_regs(regs_dirty);
+    if (epoch != mem_code_epoch()) uc_emu_stop(uc);
     gil_maybe_yield(this);
 }
 
@@ -441,30 +465,14 @@ void Cpu::run(u32 pc) {
             gil_maybe_yield(this);
             continue;
         }
-        // PC points just after the SVC instruction.
-        bool thumb = (cpsr >> 5) & 1;
-        u32 svc_addr = r[15] - (thumb ? 2 : 4);
-        if (svc_addr >= g_trap_base && svc_addr < g_trap_base + kMaxTraps * kStubSize && !thumb) {
-            u32 idx = (svc_addr - g_trap_base) / kStubSize;
-            if (svc_addr == g_return_trap) break;
-            TrapEntry& t = g_traps[idx];
-            if (!t.fn) guest_crash(*this, "call through an unassigned trap slot");
-            u32 lr = r[14];
-            dispatch_trap(idx);
-            store_regs(regs_dirty);
-            pc = pc_override ? r[15] : lr;
-            gil_maybe_yield(this);
-        } else {
-            // A raw Linux system call made by guest code.
-            regs_dirty = false;
-            u32 next = r[15] | (thumb ? 1 : 0);
-            {
-                GilUnlock unlocked(this);
-                r[0] = guest_syscall(*this, r[7]);
-            }
-            store_regs(regs_dirty);
-            pc = next;
-        }
+        // A trap that has to run outside the emulator (see on_trap).
+        u32 idx = pending_idx;
+        if (g_trap_base + idx * kStubSize == g_return_trap) break;
+        u32 lr = r[14];
+        dispatch_trap(idx);
+        store_regs(regs_dirty);
+        pc = pc_override ? r[15] : lr;
+        gil_maybe_yield(this);
     }
     depth--;
 }
@@ -484,13 +492,15 @@ u64 Cpu::call(u32 fn, const u32* words, size_t nwords) {
     if (sp < stack_base + 4096) fatal("guest stack overflow");
     for (size_t i = 0; i < nstack; i++) g2h<u32>(sp)[i] = words[4 + i];
 
-    u32 regs[16] = {};
-    if (depth > 0) memcpy(regs, r, sizeof(regs));
-    for (size_t i = 0; i < 4; i++) regs[i] = i < nwords ? words[i] : 0;
-    regs[13] = sp;
-    regs[14] = g_return_trap;
-    memcpy(r, regs, sizeof(regs));
-    store_regs(true);
+    for (size_t i = 0; i < 4; i++) r[i] = i < nwords ? words[i] : 0;
+    r[13] = sp;
+    r[14] = g_return_trap;
+    {
+        // r4-r11 are callee-saved, so the interrupted context keeps them; only touch what a call needs.
+        static const int ids[6] = {UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R3, UC_ARM_REG_SP, UC_ARM_REG_LR};
+        void* ptrs[6] = {&r[0], &r[1], &r[2], &r[3], &r[13], &r[14]};
+        uc_reg_write_batch(uc, const_cast<int*>(ids), (void* const*)ptrs, 6);
+    }
 
     run(fn);
 
@@ -501,9 +511,13 @@ u64 Cpu::call(u32 fn, const u32* words, size_t nwords) {
         // put the interrupted context back, including PC, before the outer emulation resumes.
         memcpy(r, saved, sizeof(saved));
         cpsr = saved_cpsr;
-        store_regs(true);
+        static const int ids[6] = {UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R3, UC_ARM_REG_SP, UC_ARM_REG_LR};
+        void* ptrs[6] = {&r[0], &r[1], &r[2], &r[3], &r[13], &r[14]};
+        uc_reg_write_batch(uc, const_cast<int*>(ids), (void* const*)ptrs, 6);
+        // The interrupted host call returns straight to its caller once the hook finishes
+        // (re-running the stub would call the host function a second time).
         uc_reg_write(uc, UC_ARM_REG_CPSR, &saved_cpsr);
-        u32 pcv = saved[15] | ((saved_cpsr >> 5) & 1);
+        u32 pcv = saved[14];
         uc_reg_write(uc, UC_ARM_REG_PC, &pcv);
     }
     regs_dirty = saved_dirty;

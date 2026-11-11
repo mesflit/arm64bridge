@@ -44,6 +44,7 @@ struct Cpu {
     int depth = 0;
     u64 epoch = 0;
     bool trap_pending = false;
+    u32 pending_idx = 0;  // trap slot that must run in the run loop
     u32 bad_excp = 0;
     u64 fault_addr = 0;     // address of the last invalid guest memory access
     int fault_type = 0;
@@ -70,14 +71,17 @@ struct Cpu {
 
     ~Cpu();
 
-    // Called from the CPU's SVC handler: runs a host function without leaving the emulator.
+    // Called from the CPU's SVC handler (raw guest system calls).
     void on_swi();
+    // Called by a code hook on the trap stubs: runs a host function without leaving the emulator.
+    void on_trap(u32 addr);
 
   private:
     Cpu();
     void run(u32 pc);
     void dispatch_trap(u32 idx);
-    void load_regs();
+    void load_regs();       // all registers
+    void load_call_regs();  // r0-r3, sp, lr, pc: what a host function needs
     void store_regs(bool all);
     friend struct CpuHolder;
 };
