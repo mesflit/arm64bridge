@@ -14,6 +14,8 @@
 #include <android/log.h>
 #include <android/native_window.h>
 #include <android/native_window_jni.h>
+#include <android/looper.h>
+#include <android/sensor.h>
 #endif
 
 namespace a64b {
@@ -32,6 +34,7 @@ void guest_log(int prio, const char* tag, const std::string& msg) {
 std::mutex g_ptr_mu;
 std::vector<void*> g_ptrs{nullptr};
 std::unordered_map<void*, u32> g_ptr_lookup;
+[[maybe_unused]] std::unordered_map<u32, u32> g_asset_buffers;  // AAsset token -> guest copy
 
 [[maybe_unused]] u32 ptr_token(void* p) {
     if (!p) return 0;
@@ -134,6 +137,16 @@ void register_android_thunks() {
     });
     reg("AAsset_close", +[](u32 as) {
         if (auto* p = (AAsset*)ptr_host(as)) {
+            u32 copy = 0;
+            {
+                std::lock_guard<std::mutex> lk(g_ptr_mu);
+                auto it = g_asset_buffers.find(as);
+                if (it != g_asset_buffers.end()) {
+                    copy = it->second;
+                    g_asset_buffers.erase(it);
+                }
+            }
+            if (copy) g_free(copy);
             AAsset_close(p);
             ptr_drop(as);
         }
@@ -146,10 +159,6 @@ void register_android_thunks() {
     reg("AAsset_getRemainingLength", +[](u32 as) -> i32 { auto* p = (AAsset*)ptr_host(as); return p ? (i32)AAsset_getRemainingLength(p) : 0; });
     reg("AAsset_getRemainingLength64", +[](u32 as) -> long long { auto* p = (AAsset*)ptr_host(as); return p ? (long long)AAsset_getRemainingLength64(p) : 0; });
     reg("AAsset_isAllocated", +[](u32) -> int { return 0; });
-    reg("AAsset_getBuffer", +[](u32) -> u32 {
-        LOGW("AAsset_getBuffer is not bridged (asset memory is outside the guest address space)");
-        return 0;
-    });
     reg("AAsset_openFileDescriptor", +[](u32 as, i32* start, i32* length) -> int {
         auto* p = (AAsset*)ptr_host(as);
         if (!p) return -1;
@@ -161,6 +170,130 @@ void register_android_thunks() {
         }
         return fd;
     });
+
+    // ---------------------------------------------------------------- asset directories
+    struct GAssetDir {
+        AAssetDir* dir;
+        u32 name;  // guest copy of the last returned file name
+    };
+    reg("AAssetManager_openDir", +[](u32 mgr, const char* path) -> u32 {
+        auto* m = (AAssetManager*)ptr_host(mgr);
+        AAssetDir* d = m ? AAssetManager_openDir(m, path ? path : "") : nullptr;
+        if (!d) return 0;
+        return ptr_token(new GAssetDir{d, g_malloc(1024)});
+    });
+    reg("AAssetDir_getNextFileName", +[](u32 tok) -> u32 {
+        auto* g = (GAssetDir*)ptr_host(tok);
+        const char* n = g ? AAssetDir_getNextFileName(g->dir) : nullptr;
+        if (!n) return 0;
+        snprintf(g2h<char>(g->name), 1024, "%s", n);
+        return g->name;
+    });
+    reg("AAssetDir_rewind", +[](u32 tok) { if (auto* g = (GAssetDir*)ptr_host(tok)) AAssetDir_rewind(g->dir); });
+    reg("AAssetDir_close", +[](u32 tok) {
+        auto* g = (GAssetDir*)ptr_host(tok);
+        if (!g) return;
+        AAssetDir_close(g->dir);
+        g_free(g->name);
+        ptr_drop(tok);
+        delete g;
+    });
+    reg("AAsset_getBuffer", +[](u32 as) -> u32 {
+        // The asset's own buffer is outside guest memory: hand out a guest copy, freed by AAsset_close.
+        auto* p = (AAsset*)ptr_host(as);
+        if (!p) return 0;
+        std::lock_guard<std::mutex> lk(g_ptr_mu);
+        auto it = g_asset_buffers.find(as);
+        if (it != g_asset_buffers.end()) return it->second;
+        const void* buf = AAsset_getBuffer(p);
+        off64_t len = AAsset_getLength64(p);
+        if (!buf || len < 0 || len > 0x7fffffff) return 0;
+        u32 g = g_malloc((u32)len + 1);
+        if (!g) return 0;
+        memcpy(g2h(g), buf, (size_t)len);
+        g_asset_buffers[as] = g;
+        return g;
+    });
+
+    // ---------------------------------------------------------------- loopers and sensors
+    reg("ALooper_prepare", +[](int opts) -> u32 { return ptr_token(ALooper_prepare(opts)); });
+    reg("ALooper_forThread", +[]() -> u32 { return ptr_token(ALooper_forThread()); });
+    reg("ALooper_acquire", +[](u32 l) { if (auto* p = (ALooper*)ptr_host(l)) ALooper_acquire(p); });
+    reg("ALooper_release", +[](u32 l) { if (auto* p = (ALooper*)ptr_host(l)) ALooper_release(p); });
+    reg("ALooper_wake", +[](u32 l) { if (auto* p = (ALooper*)ptr_host(l)) ALooper_wake(p); });
+    reg("ALooper_pollOnce", +[](int timeout, i32* fd, i32* events, u32* data) -> int {
+        int f = 0, e = 0;
+        void* d = nullptr;
+        int r = ALooper_pollOnce(timeout, &f, &e, &d);
+        if (fd) *fd = f;
+        if (events) *events = e;
+        if (data) *data = (u32)(uintptr_t)d;
+        return r;
+    });
+    reg("ALooper_pollAll", +[](int timeout, i32* fd, i32* events, u32* data) -> int {
+        int f = 0, e = 0;
+        void* d = nullptr;
+        int r = ALooper_pollOnce(timeout, &f, &e, &d);
+        if (fd) *fd = f;
+        if (events) *events = e;
+        if (data) *data = (u32)(uintptr_t)d;
+        return r;
+    });
+    reg("ALooper_addFd", +[](u32 l, int fd, int ident, int events, u32 cb, u32 data) -> int {
+        auto* p = (ALooper*)ptr_host(l);
+        if (cb) LOGW("ALooper_addFd with a callback is not bridged; the fd is only reported by ident");
+        return p ? ALooper_addFd(p, fd, ident, events, nullptr, (void*)(uintptr_t)data) : -1;
+    });
+    reg("ALooper_removeFd", +[](u32 l, int fd) -> int { auto* p = (ALooper*)ptr_host(l); return p ? ALooper_removeFd(p, fd) : -1; });
+    reg("ASensorManager_getInstance", +[]() -> u32 {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        return ptr_token(ASensorManager_getInstance());
+#pragma clang diagnostic pop
+    });
+    reg("ASensorManager_getInstanceForPackage", +[](const char* pkg) -> u32 { return ptr_token(ASensorManager_getInstanceForPackage(pkg)); });
+    reg("ASensorManager_getDefaultSensor", +[](u32 m, int type) -> u32 {
+        auto* p = (ASensorManager*)ptr_host(m);
+        return p ? ptr_token((void*)ASensorManager_getDefaultSensor(p, type)) : 0;
+    });
+    reg("ASensorManager_createEventQueue", +[](u32 m, u32 looper, int ident, u32 cb, u32 data) -> u32 {
+        auto* p = (ASensorManager*)ptr_host(m);
+        if (!p) return 0;
+        if (cb) LOGW("ASensorManager_createEventQueue with a callback is not bridged; events must be read with ASensorEventQueue_getEvents");
+        return ptr_token(ASensorManager_createEventQueue(p, (ALooper*)ptr_host(looper), ident, nullptr, (void*)(uintptr_t)data));
+    });
+    reg("ASensorManager_destroyEventQueue", +[](u32 m, u32 q) -> int {
+        auto* p = (ASensorManager*)ptr_host(m);
+        auto* e = (ASensorEventQueue*)ptr_host(q);
+        if (!p || !e) return -1;
+        int r = ASensorManager_destroyEventQueue(p, e);
+        ptr_drop(q);
+        return r;
+    });
+    reg("ASensorEventQueue_enableSensor", +[](u32 q, u32 s) -> int {
+        auto* e = (ASensorEventQueue*)ptr_host(q);
+        return e ? ASensorEventQueue_enableSensor(e, (const ASensor*)ptr_host(s)) : -1;
+    });
+    reg("ASensorEventQueue_disableSensor", +[](u32 q, u32 s) -> int {
+        auto* e = (ASensorEventQueue*)ptr_host(q);
+        return e ? ASensorEventQueue_disableSensor(e, (const ASensor*)ptr_host(s)) : -1;
+    });
+    reg("ASensorEventQueue_setEventRate", +[](u32 q, u32 s, i32 usec) -> int {
+        auto* e = (ASensorEventQueue*)ptr_host(q);
+        return e ? ASensorEventQueue_setEventRate(e, (const ASensor*)ptr_host(s), usec) : -1;
+    });
+    reg("ASensorEventQueue_hasEvents", +[](u32 q) -> int { auto* e = (ASensorEventQueue*)ptr_host(q); return e ? ASensorEventQueue_hasEvents(e) : -1; });
+    // ASensorEvent has the same 104-byte layout on 32- and 64-bit ARM.
+    static_assert(sizeof(ASensorEvent) == 104, "ASensorEvent layout");
+    reg("ASensorEventQueue_getEvents", +[](u32 q, ASensorEvent* ev, u32 n) -> int {
+        auto* e = (ASensorEventQueue*)ptr_host(q);
+        return e ? (int)ASensorEventQueue_getEvents(e, ev, n) : -1;
+    });
+    reg("ASensor_getName", +[](u32 s) -> u32 { auto* p = (const ASensor*)ptr_host(s); return p ? guest_intern_string(ASensor_getName(p)) : 0; });
+    reg("ASensor_getVendor", +[](u32 s) -> u32 { auto* p = (const ASensor*)ptr_host(s); return p ? guest_intern_string(ASensor_getVendor(p)) : 0; });
+    reg("ASensor_getType", +[](u32 s) -> int { auto* p = (const ASensor*)ptr_host(s); return p ? ASensor_getType(p) : -1; });
+    reg("ASensor_getResolution", +[](u32 s) -> float { auto* p = (const ASensor*)ptr_host(s); return p ? ASensor_getResolution(p) : 0.f; });
+    reg("ASensor_getMinDelay", +[](u32 s) -> int { auto* p = (const ASensor*)ptr_host(s); return p ? ASensor_getMinDelay(p) : 0; });
 
     // ---------------------------------------------------------------- EGL
     reg("eglGetError", +[]() -> int { return eglGetError(); });

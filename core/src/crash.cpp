@@ -21,7 +21,9 @@ void handler(int sig, siginfo_t* info, void* uctx) {
         LOGE("=== fatal signal %d (code %d), fault address %p ===", sig, info ? info->si_code : 0, info ? info->si_addr : nullptr);
         if (info && mem_contains((u64)(uintptr_t)info->si_addr))
             LOGE(" the fault address is inside guest memory: %s", describe_address((u32)(uintptr_t)info->si_addr).c_str());
-        if (Cpu* c = Cpu::current_or_null()) cpu_dump_state(*c, "state of the crashing thread");
+        Cpu* c = Cpu::current_or_null();
+        if (c && c->crash_reported) LOGE(" (guest state was reported above)");
+        else if (c) cpu_dump_state(*c, "state of the crashing thread");
         else LOGE(" the crashing thread never ran guest code");
         if (int fd = log_file_fd(); fd >= 0) fsync(fd);
     }

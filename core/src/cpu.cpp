@@ -126,6 +126,13 @@ void intr_hook(uc_engine* uc, uint32_t intno, void* user) {
     }
 }
 
+bool mem_fault_hook(uc_engine*, uc_mem_type type, uint64_t addr, int, int64_t, void* user) {
+    Cpu* c = static_cast<Cpu*>(user);
+    c->fault_addr = addr;
+    c->fault_type = (int)type;
+    return false;
+}
+
 constexpr u32 kDefaultStack = 2 * 1024 * 1024;
 
 }  // namespace
@@ -154,6 +161,8 @@ Cpu::Cpu() {
     if (e != UC_ERR_OK) fatal("uc_mem_map_ptr: %s", uc_strerror(e));
     uc_hook hh;
     e = uc_hook_add(uc, &hh, UC_HOOK_INTR, (void*)intr_hook, this, 1, 0);
+    if (e != UC_ERR_OK) fatal("uc_hook_add: %s", uc_strerror(e));
+    e = uc_hook_add(uc, &hh, UC_HOOK_MEM_INVALID, (void*)mem_fault_hook, this, 1, 0);
     if (e != UC_ERR_OK) fatal("uc_hook_add: %s", uc_strerror(e));
 
     // Enable VFP/NEON: CPACR.cp10/cp11 = full access, FPEXC.EN = 1.
@@ -197,9 +206,23 @@ void Cpu::store_regs(bool all) {
     uc_reg_write_batch(uc, const_cast<int*>(kAllRegs), (void* const*)ptrs, n);
 }
 
-void cpu_dump_state(Cpu& c, const char* why) {
+void cpu_dump_state(Cpu& c, const char* why, bool at_fault) {
     LOGE("=== %s ===", why);
-    LOGE(" registers at the last guest->host call:");
+    if (at_fault && c.fault_type) {
+        const char* kind = "invalid access";
+        switch (c.fault_type) {
+            case UC_MEM_READ_UNMAPPED: kind = "read of unmapped memory"; break;
+            case UC_MEM_WRITE_UNMAPPED: kind = "write to unmapped memory"; break;
+            case UC_MEM_FETCH_UNMAPPED: kind = "execution of unmapped memory"; break;
+            case UC_MEM_WRITE_PROT: kind = "write to protected memory"; break;
+            case UC_MEM_READ_PROT: kind = "read of protected memory"; break;
+            case UC_MEM_FETCH_PROT: kind = "execution of protected memory"; break;
+            default: break;
+        }
+        LOGE(" %s at address 0x%08llx%s", kind,
+             (unsigned long long)c.fault_addr, c.fault_addr < 0x10000 ? " (NULL pointer)" : "");
+    }
+    LOGE(" registers %s:", at_fault ? "at the fault" : "at the last guest->host call");
     LOGE(" r0=%08x r1=%08x r2=%08x r3=%08x", c.r[0], c.r[1], c.r[2], c.r[3]);
     LOGE(" r4=%08x r5=%08x r6=%08x r7=%08x", c.r[4], c.r[5], c.r[6], c.r[7]);
     LOGE(" r8=%08x r9=%08x r10=%08x r11=%08x", c.r[8], c.r[9], c.r[10], c.r[11]);
@@ -215,10 +238,23 @@ void cpu_dump_state(Cpu& c, const char* why) {
         tr += " ";
     }
     LOGE(" last host calls (oldest first): %s", tr.c_str());
+    // Heuristic backtrace: code addresses found on the guest stack.
+    u32 sp = c.r[13];
+    if (sp >= c.stack_base && sp < c.stack_base + c.stack_size) {
+        int found = 0;
+        for (u32 a = sp; a + 4 <= c.stack_base + c.stack_size && a < sp + 16384 && found < 20; a += 4) {
+            u32 v = *g2h<u32>(a);
+            std::string d = describe_address(v & ~1u);
+            if (d.find(".so+") == std::string::npos) continue;
+            LOGE("  stack sp+0x%04x: %s", a - sp, d.c_str());
+            found++;
+        }
+    }
+    c.crash_reported = true;
 }
 
 void guest_crash(Cpu& c, const char* why) {
-    cpu_dump_state(c, strfmt("guest crash: %s", why).c_str());
+    cpu_dump_state(c, strfmt("guest crash: %s", why).c_str(), true);
     fatal("guest code crashed (%s)", why);
 }
 
@@ -232,6 +268,8 @@ void Cpu::run(u32 pc) {
         trap_pending = false;
         bad_excp = 0;
         gil_acquire(this);
+        fault_addr = 0;
+        fault_type = 0;
         uc_err e = uc_emu_start(uc, pc, 0, 0, 0);
         gil_release();
         load_regs();

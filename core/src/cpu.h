@@ -20,7 +20,7 @@ u32 trap_create(const char* name, TrapFn fn, void* ud);
 const char* trap_name_at(u32 addr);
 const char* trap_name_by_index(u32 idx);
 // Writes the call trace and last known registers of the current thread to the log.
-void cpu_dump_state(Cpu& c, const char* why);
+void cpu_dump_state(Cpu& c, const char* why, bool at_fault = false);
 
 struct ThreadExit {
     u32 retval;
@@ -44,6 +44,9 @@ struct Cpu {
     u64 epoch = 0;
     bool trap_pending = false;
     u32 bad_excp = 0;
+    u64 fault_addr = 0;     // address of the last invalid guest memory access
+    int fault_type = 0;
+    bool crash_reported = false;
     // Most recent host functions called by guest code on this thread (ring buffer of trap slots).
     u32 trace[32] = {};
     u32 trace_pos = 0;

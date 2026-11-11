@@ -6,6 +6,9 @@
 #ifdef __ANDROID__
 #include <GLES/gl.h>
 #include <GLES2/gl2.h>
+#include <GLES2/gl2ext.h>
+#include <mutex>
+#include <unordered_map>
 #include <vector>
 #endif
 
@@ -56,6 +59,41 @@ void register_gles_thunks() {
         std::vector<const GLchar*> ptrs((size_t)(count > 0 ? count : 0));
         for (GLsizei i = 0; i < count; i++) ptrs[i] = g2h<GLchar>(strings[i]);
         glShaderSource(shader, count, ptrs.data(), lengths);
+    });
+    // GL_OES_mapbuffer: the driver's mapping is outside guest memory, so the guest writes into a
+    // shadow buffer that is uploaded with glBufferSubData when it is unmapped.
+    struct Shadow { u32 mem; GLint size; };
+    static std::mutex s_map_mu;
+    static std::unordered_map<GLenum, Shadow> s_maps;
+    reg("glMapBufferOES", +[](GLenum target, GLenum) -> u32 {
+        GLint size = 0;
+        glGetBufferParameteriv(target, GL_BUFFER_SIZE, &size);
+        if (size <= 0) return 0;
+        u32 mem = g_malloc((u32)size);
+        if (!mem) return 0;
+        std::lock_guard<std::mutex> lk(s_map_mu);
+        auto it = s_maps.find(target);
+        if (it != s_maps.end()) g_free(it->second.mem);
+        s_maps[target] = Shadow{mem, size};
+        return mem;
+    });
+    reg("glUnmapBufferOES", +[](GLenum target) -> u32 {
+        Shadow sh{};
+        {
+            std::lock_guard<std::mutex> lk(s_map_mu);
+            auto it = s_maps.find(target);
+            if (it == s_maps.end()) return GL_FALSE;
+            sh = it->second;
+            s_maps.erase(it);
+        }
+        glBufferSubData(target, 0, sh.size, g2h(sh.mem));
+        g_free(sh.mem);
+        return GL_TRUE;
+    });
+    reg("glGetBufferPointervOES", +[](GLenum target, GLenum, u32* out) {
+        std::lock_guard<std::mutex> lk(s_map_mu);
+        auto it = s_maps.find(target);
+        *out = it == s_maps.end() ? 0 : it->second.mem;
     });
     reg("glGetVertexAttribPointerv", +[](GLuint index, GLenum pname, u32* out) {
         void* p = nullptr;

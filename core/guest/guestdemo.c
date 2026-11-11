@@ -9,6 +9,14 @@
 #include <stdio.h>
 #ifdef __ANDROID__
 #include <android/log.h>
+#include <stdint.h>
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
+#include <unistd.h>
+#include <wchar.h>
+#include <wctype.h>
+#include <zlib.h>
+typedef wchar_t wchar_t32;
 #include <math.h>
 #include <pthread.h>
 #include <setjmp.h>
@@ -204,6 +212,67 @@ JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_libc(JNIEnv* env, 
 
     if (arm_mode_helper(5) == 16 && pow(2.0, 10.0) == 1024.0) score += 16; /* 31 */
     if (g_ctor_ran == 42) score += 32;                 /* 63 */
+    return score;
+}
+
+/* ---- zlib, epoll, eventfd, div_t, wide strings: structures that differ between 32 and 64 bit ---- */
+JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_posix(JNIEnv* env, jclass cls) {
+    (void)env; (void)cls;
+    int score = 0;
+    static const char text[] = "Minions! Minions! Minions! Bello! Bello! Bello! Banana banana banana banana.";
+    const unsigned char* src = (const unsigned char*)text;
+    unsigned long n = sizeof(text);
+
+    if (zlibVersion() && zlibVersion()[0] == '1' && crc32(0, (const unsigned char*)"hello", 5) == 0x3610a686UL) score += 1;
+
+    unsigned char packed[256], unpacked[256];
+    unsigned long plen = sizeof(packed), ulen = sizeof(unpacked);
+    if (compressBound(n) <= sizeof(packed) && compress(packed, &plen, src, n) == Z_OK && plen < n &&
+        uncompress(unpacked, &ulen, packed, plen) == Z_OK && ulen == n && memcmp(unpacked, src, n) == 0)
+        score += 2;
+
+    z_stream d, i;
+    memset(&d, 0, sizeof(d));
+    memset(&i, 0, sizeof(i));
+    unsigned char stream[256], back[256];
+    int ok = deflateInit(&d, 9) == Z_OK;
+    d.next_in = (unsigned char*)src; d.avail_in = (unsigned)n; d.next_out = stream; d.avail_out = sizeof(stream);
+    ok = ok && deflate(&d, Z_FINISH) == Z_STREAM_END && d.total_in == n;
+    unsigned slen = (unsigned)d.total_out;
+    deflateEnd(&d);
+    ok = ok && inflateInit2(&i, 15) == Z_OK;
+    /* feed the compressed data in small pieces */
+    i.next_out = back; i.avail_out = sizeof(back);
+    int r = Z_OK;
+    for (unsigned off = 0; ok && off < slen && r == Z_OK; off += 7) {
+        i.next_in = stream + off;
+        i.avail_in = slen - off < 7 ? slen - off : 7;
+        r = inflate(&i, Z_NO_FLUSH);
+    }
+    ok = ok && r == Z_STREAM_END && i.total_out == n && memcmp(back, src, n) == 0 && i.next_out == back + n;
+    inflateEnd(&i);
+    if (ok) score += 4;
+
+    int efd = eventfd(0, 0), ep = epoll_create(4);
+    struct epoll_event ev, out[2];
+    memset(&ev, 0, sizeof(ev));
+    ev.events = EPOLLIN;
+    ev.data = 0x1122334455667788ULL;
+    uint64_t one = 1;
+    if (efd >= 0 && ep >= 0 && epoll_ctl(ep, EPOLL_CTL_ADD, efd, &ev) == 0 && write(efd, &one, 8) == 8 &&
+        epoll_wait(ep, out, 2, 1000) == 1 && out[0].data == 0x1122334455667788ULL && (out[0].events & EPOLLIN))
+        score += 8;
+    if (efd >= 0) close(efd);
+    if (ep >= 0) close(ep);
+
+    div_t q = div(47, 5);
+    if (q.quot == 9 && q.rem == 2) score += 16;
+
+    wchar_t32 w[32];
+    static const wchar_t32 wfmt[] = {'%', 'd', '-', '%', 's', 0};
+    if (swprintf(w, 32, wfmt, 42, "ok") == 5 && w[0] == '4' && w[3] == 'o' && w[5] == 0 &&
+        iswctype('A', wctype("upper")) && !iswctype('a', wctype("upper")))
+        score += 32;
     return score;
 }
 

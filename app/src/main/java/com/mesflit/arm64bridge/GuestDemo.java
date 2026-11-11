@@ -25,6 +25,7 @@ public final class GuestDemo {
     public static native int primes(int limit);
     public static native int threads(int threads, int rounds);
     public static native int libc();
+    public static native int posix();
     // Registered from JNI_OnLoad with RegisterNatives:
     public native String registered(int x, String s);
     public static native boolean sameEnv();
@@ -66,6 +67,8 @@ public final class GuestDemo {
         check(sb, failed, "exception from native code", thrown);
         check(sb, failed, "fib", fib(90) == 2880067194370816120L);
         check(sb, failed, "libc score " + libc(), libc() == 63);
+        int posix = posix();
+        check(sb, failed, "zlib / epoll / div_t / wide strings score " + posix, posix == 63);
         check(sb, failed, "threads", threads(4, 2000) == 8000);
         check(sb, failed, "RegisterNatives", "registered:14:x".equals(new GuestDemo().registered(7, "x")));
         check(sb, failed, "JavaVM.GetEnv", sameEnv());

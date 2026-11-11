@@ -76,6 +76,8 @@ void thunks_init() {
         register_android_thunks();
         register_gles_thunks();
         register_data_symbols();
+        register_zlib_thunks();
+        register_posix_extra_thunks();
     });
 }
 

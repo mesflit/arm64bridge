@@ -94,7 +94,7 @@ val buildGuestDemo = tasks.register<Exec>("buildGuestDemo") {
         commandLine(
             clang.absolutePath, "--target=armv7a-linux-androideabi21", "-march=armv7-a", "-mfloat-abi=softfp",
             "-mfpu=neon", "-mthumb", "-O2", "-fPIC", "-shared", "-Wl,--hash-style=both",
-            "-o", out.get().asFile.absolutePath, src.absolutePath, "-llog", "-lm"
+            "-o", out.get().asFile.absolutePath, src.absolutePath, "-llog", "-lm", "-lz"
         )
     }
 }

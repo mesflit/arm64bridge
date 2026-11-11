@@ -39,7 +39,9 @@ add_library(arm64bridge SHARED
   src/trampoline.S
   src/zip.cpp
   src/api.cpp
-  src/crash.cpp)
+  src/crash.cpp
+  src/zlib_thunks.cpp
+  src/posix_extra_thunks.cpp)
 target_include_directories(arm64bridge PRIVATE src ${unicorn_SOURCE_DIR}/include)
 set(A64B_VERSION "dev" CACHE STRING "Version string reported by the runtime")
 target_compile_definitions(arm64bridge PRIVATE A64B_VERSION="${A64B_VERSION}")

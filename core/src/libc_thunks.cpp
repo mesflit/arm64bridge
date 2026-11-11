@@ -590,7 +590,6 @@ void register_libc_thunks() {
     reg("getrlimit", +[](int, u32* out) -> int { out[0] = out[1] = 0x7fffffff; return 0; });
     reg("setrlimit", +[](int, void*) -> int { return 0; });
     RAW(fcntl) { ArgReader a(c); int fd = A32(), cmd = A32(); u32 arg = A32(); c.set_ret32((u32)fcntl(fd, cmd, (long)arg)); });
-    RAW(ioctl) { ArgReader a(c); int fd = A32(); u32 req = A32(), arg = A32(); c.set_ret32((u32)ioctl(fd, req, (unsigned long)arg)); });
     RAW(syscall) {
         ArgReader a(c);
         u32 nr = A32();
