@@ -73,6 +73,7 @@ bool clear_exc(JNIEnv* env) {
 }
 
 std::string jstr(JNIEnv* env, jstring s);
+long long thread_cpu_ticks(int tid);
 
 jobject current_application(JNIEnv* env) {
     jclass at = env->FindClass("android/app/ActivityThread");
@@ -181,16 +182,40 @@ void open_log_file(JNIEnv* env) {
         // Every 5 s: frames drawn, guest->host calls and Java->native calls. Shows whether a
         // "frozen" game still renders and whether touch events reach the native code.
         std::thread([] {
-            u64 last_frames = 0, last_calls = 0, last_sw = 0;
+            u64 last_frames = 0, last_calls = 0;
+            int last_tid = 0;
+            long long last_ticks = 0, last_proc = 0;
+            const long hz = sysconf(_SC_CLK_TCK) > 0 ? sysconf(_SC_CLK_TCK) : 100;
             for (;;) {
                 std::this_thread::sleep_for(std::chrono::seconds(5));
-                u64 f = g_frames.load(), k = g_guest_host_calls.load(), sw = g_gil_switches.load();
-                LOGI("heartbeat: %.1f fps, %llu guest->host calls/s, %llu thread switches/s, %d guest threads; Java->native: %s",
-                     (f - last_frames) / 5.0, (unsigned long long)((k - last_calls) / 5),
-                     (unsigned long long)((sw - last_sw) / 5), g_guest_threads.load(), jni_call_stats().c_str());
+                u64 f = g_frames.load(), k = g_guest_host_calls.load();
+                // How busy the render thread and the whole process are: a render thread at ~100%
+                // means the frame rate is limited by how fast guest code is emulated.
+                int tid = g_render_tid.load();
+                long long ticks = tid ? thread_cpu_ticks(tid) : -1;
+                long long proc = 0;
+                {
+                    FILE* pf = fopen("/proc/self/stat", "re");
+                    if (pf) {
+                        char b[1024];
+                        size_t n = fread(b, 1, sizeof(b) - 1, pf);
+                        b[n] = 0;
+                        fclose(pf);
+                        unsigned long long ut = 0, st = 0;
+                        const char* q = strrchr(b, ')');
+                        if (q && sscanf(q + 2, "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu", &ut, &st) == 2) proc = (long long)(ut + st);
+                    }
+                }
+                int render_pct = (tid && tid == last_tid && ticks >= 0) ? (int)((ticks - last_ticks) * 100 / (5 * hz)) : -1;
+                int proc_pct = last_proc ? (int)((proc - last_proc) * 100 / (5 * hz)) : -1;
+                LOGI("heartbeat: %.1f fps, render thread CPU %d%%, process CPU %d%%, %llu guest->host calls/s, %d guest threads; Java->native: %s",
+                     (f - last_frames) / 5.0, render_pct, proc_pct, (unsigned long long)((k - last_calls) / 5),
+                     g_guest_threads.load(), jni_call_stats().c_str());
+                last_tid = tid;
+                last_ticks = ticks;
+                last_proc = proc;
                 last_frames = f;
                 last_calls = k;
-                last_sw = sw;
             }
         }).detach();
         LOGI("ARM64Bridge %s, log file: %s", A64B_VERSION, fd >= 0 ? where.c_str() : "(none)");
@@ -198,6 +223,24 @@ void open_log_file(JNIEnv* env) {
              static_string(env, "android/os/Build", "MODEL").c_str(), static_string(env, "android/os/Build$VERSION", "RELEASE").c_str(),
              static_int(env, "android/os/Build$VERSION", "SDK_INT"));
     });
+}
+
+// CPU time (user + system, in clock ticks) a thread of this process has used so far.
+long long thread_cpu_ticks(int tid) {
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/self/task/%d/stat", tid);
+    FILE* f = fopen(path, "re");
+    if (!f) return -1;
+    char buf[1024];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = 0;
+    const char* p = strrchr(buf, ')');  // the thread name may contain spaces
+    if (!p) return -1;
+    unsigned long long ut = 0, st = 0;
+    // fields after ")": state ppid pgrp session tty tpgid flags minflt cminflt majflt cmajflt utime stime
+    if (sscanf(p + 2, "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu", &ut, &st) != 2) return -1;
+    return (long long)(ut + st);
 }
 
 std::string jstr(JNIEnv* env, jstring s) {

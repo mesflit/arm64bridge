@@ -91,6 +91,7 @@ extern std::atomic<u64> g_guest_host_calls;
 extern std::atomic<u64> g_frames;
 extern std::atomic<int> g_guest_threads;
 extern std::atomic<u64> g_gil_switches;
+extern std::atomic<int> g_render_tid;  // thread that last called eglSwapBuffers
 [[noreturn]] void guest_crash(Cpu& c, const char* why);
 // Implemented by the loader: "libfoo.so+0x1234 (symbol)".
 std::string describe_address(u32 addr);

@@ -1,5 +1,7 @@
 // liblog, libandroid (assets, native window), EGL.
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include <unistd.h>
+
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -358,6 +360,7 @@ void register_android_thunks() {
     });
     reg("eglSwapBuffers", +[](u32 d, u32 s) -> u32 {
         g_frames.fetch_add(1, std::memory_order_relaxed);
+        g_render_tid.store((int)gettid(), std::memory_order_relaxed);
         return eglSwapBuffers(ptr_host(d), ptr_host(s));
     });
     reg("eglGetCurrentContext", +[]() -> u32 { return ptr_token(eglGetCurrentContext()); });

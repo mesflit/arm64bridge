@@ -17,6 +17,7 @@ std::atomic<u64> g_guest_host_calls{0};
 std::atomic<u64> g_frames{0};
 std::atomic<int> g_guest_threads{0};
 std::atomic<u64> g_gil_switches{0};
+std::atomic<int> g_render_tid{0};
 
 // ---------------------------------------------------------------------------
 // Trap stubs.  Every slot is "svc #0; bx lr" (ARM mode). The slot index selects
@@ -270,8 +271,10 @@ Cpu::Cpu() {
     uc_err e = uc_open(UC_ARCH_ARM, UC_MODE_ARM, &uc);
     if (e != UC_ERR_OK) fatal("uc_open: %s", uc_strerror(e));
     uc_ctl_set_cpu_model(uc, UC_CPU_ARM_MAX);
-    // Unicorn reserves 1 GiB of RWX memory per engine by default; there is one engine per guest thread.
-    uc_ctl_set_tcg_buffer_size(uc, 256u << 20);
+    // Translation cache. When it fills up Unicorn throws away all translated code and the game
+    // stalls while it is translated again, so keep Unicorn's default of 1 GiB (address space only;
+    // pages are committed as code is translated).
+    uc_ctl_set_tcg_buffer_size(uc, 1024u << 20);
     e = uc_mem_map_ptr(uc, mem_arena_base(), mem_arena_size(), UC_PROT_ALL, g2h(mem_arena_base()));
     if (e != UC_ERR_OK) fatal("uc_mem_map_ptr: %s", uc_strerror(e));
     uc_hook hh;
