@@ -15,6 +15,11 @@ object AxmlPatcher {
     private const val ATTR_TARGET_SDK = 0x01010270
     private const val ATTR_BACKUP_AGENT = 0x0101027f
     private const val ATTR_EXTRACT_NATIVE_LIBS = 0x010104ea
+    private const val ATTR_EXPORTED = 0x01010010
+    private const val ATTR_INIT_ORDER = 0x0101001a
+
+    /** Provider class (added to the patched APK) that copies embedded OBB/data files on first start. */
+    const val DATA_INSTALLER = "com.mesflit.arm64bridge.overlay.DataInstaller"
 
     private val COMPONENTS = setOf("activity", "activity-alias", "service", "receiver", "provider")
     private val PERMISSION_ELEMENTS = setOf("uses-permission", "uses-permission-sdk-23", "uses-permission-sdk-m")
@@ -30,7 +35,7 @@ object AxmlPatcher {
     )
 
     /** What to change. null / empty means "leave as it is". */
-    class Edits(
+    data class Edits(
         val raiseTargetSdkTo: Int? = null,
         val disableAnyDensity: Boolean = false,
         val label: String? = null,
@@ -40,9 +45,12 @@ object AxmlPatcher {
         val screenOrientation: Int? = null,
         val debuggable: Boolean = false,
         val extractNativeLibs: Boolean = false,
+        /** Declare [DATA_INSTALLER]; the patcher sets this when OBB/data files are embedded. */
+        val dataInstaller: Boolean = false,
     ) {
         val isEmpty get() = raiseTargetSdkTo == null && !disableAnyDensity && label == null && packageName == null &&
-            removePermissions.isEmpty() && addPermissions.isEmpty() && screenOrientation == null && !debuggable && !extractNativeLibs
+            removePermissions.isEmpty() && addPermissions.isEmpty() && screenOrientation == null && !debuggable &&
+            !extractNativeLibs && !dataInstaller
     }
 
     private fun intValue(a: Axml.Attr?): Int? =
@@ -152,6 +160,17 @@ object AxmlPatcher {
         }
         if (edits.debuggable) app?.setBoolean(ATTR_DEBUGGABLE, "debuggable", true)
         if (edits.extractNativeLibs) app?.setBoolean(ATTR_EXTRACT_NATIVE_LIBS, "extractNativeLibs", true)
+        if (edits.dataInstaller) {
+            requireNotNull(app) { "the manifest has no <application>" }
+            val pkg = root.attr("package")?.str ?: error("the manifest has no package name")
+            val provider = doc.children(app, "provider").firstOrNull { it.string(ATTR_NAME) == DATA_INSTALLER }
+                ?: doc.insertChild(app, "provider")
+            provider.setString(ATTR_NAME, "name", DATA_INSTALLER)
+            provider.setString(ATTR_AUTHORITIES, "authorities", "$pkg.arm64bridge.data")
+            provider.setBoolean(ATTR_EXPORTED, "exported", false)
+            // Highest init order: created before the app's other providers (and before the Application).
+            provider.setInt(ATTR_INIT_ORDER, "initOrder", Int.MAX_VALUE)
+        }
 
         return doc.toBytes()
     }

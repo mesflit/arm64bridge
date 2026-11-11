@@ -59,6 +59,12 @@ Customization (optional, works on any APK):
 - **Screen orientation**: force landscape, portrait or any orientation for all activities.
 - **Debuggable**: lets `adb shell run-as` and debuggers attach.
 - **Extract native libraries**: makes the installer unpack the `.so` files to disk (helps some old apps).
+- **OBB and data files**: add `.obb` files and/or game data (a ZIP or a folder with the contents of
+  `Android/data/<package>/`). They are embedded in the APK together with a small content provider that copies them
+  to the app's own `Android/obb/<package>/` and `Android/data/<package>/` the first time it starts (apps may always
+  write their own folders, so no storage permission is needed and nothing has to be copied by hand). The first start
+  takes a little longer, and the files take their size twice (inside the installed APK and in the copied folders).
+  When the package name is changed, OBB file names are renamed to match.
 
 The **About** entry in the menu shows the version and links to this repository.
 
@@ -67,7 +73,8 @@ Notes:
 - The patched APK is re-signed with a key generated on the device. Anything tied to the original signature
   (Google Play sign-in, licence checks, in-app purchases, some tamper checks) will not work, and Play Protect
   may warn about the patched app.
-- Expansion data (OBB) has to be copied to `Android/obb/<package>/` by hand.
+- Expansion data (OBB) and game data can be embedded with the **OBB and data files** option, or copied to
+  `Android/obb/<package>/` and `Android/data/<package>/` by hand.
 - After updating ARM64Bridge, patch the app again: the runtime is copied into the patched APK.
 
 ## Tested on a device

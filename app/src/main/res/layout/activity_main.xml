@@ -158,6 +158,58 @@
                     android:layout_height="wrap_content"
                     android:text="@string/custom_permission_add" />
             </LinearLayout>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="@string/extras_title"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/extras_help"
+                android:textAppearance="?android:attr/textAppearanceSmall" />
+
+            <Button
+                android:id="@+id/addObb"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/extras_add_obb" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/addDataZip"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/extras_add_data_zip" />
+
+                <Button
+                    android:id="@+id/addDataFolder"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/extras_add_data_folder" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/extrasList"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/extras_none" />
+
+            <Button
+                android:id="@+id/clearExtras"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/extras_clear"
+                android:visibility="gone" />
         </LinearLayout>
 
         <LinearLayout

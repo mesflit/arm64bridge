@@ -8,6 +8,7 @@ import android.security.keystore.KeyProperties
 import com.android.apksig.ApkSigner
 import java.io.File
 import java.io.FilterOutputStream
+import java.io.InputStream
 import java.io.OutputStream
 import java.math.BigInteger
 import java.security.KeyPairGenerator
@@ -15,6 +16,7 @@ import java.security.KeyStore
 import java.security.PrivateKey
 import java.security.cert.X509Certificate
 import java.util.Date
+import java.util.zip.Deflater
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
@@ -49,8 +51,20 @@ class ApkPatcher(private val context: Context) {
         val customizable get() = manifest != null
     }
 
+    /**
+     * OBB or data files to embed. [write] calls `emit(relativePath, stream)` for every file; the patched app
+     * copies them to Android/obb/<package>/ or Android/data/<package>/ the first time it starts.
+     */
+    class Extra(val kind: Kind, val write: (emit: (String, InputStream) -> Unit) -> Unit) {
+        enum class Kind { OBB, DATA }
+    }
+
     /** [inGameMenu] only applies to apps that get the bridge (the menu runs inside the bridge runtime). */
-    class Options(val manifest: AxmlPatcher.Edits, val inGameMenu: Boolean = false)
+    class Options(
+        val manifest: AxmlPatcher.Edits,
+        val inGameMenu: Boolean = false,
+        val extras: List<Extra> = emptyList(),
+    )
 
     fun analyze(apk: File): Analysis {
         ZipFile(apk).use { zip ->
@@ -100,6 +114,10 @@ class ApkPatcher(private val context: Context) {
         val shim = File(nativeDir, "liba64bshim.so")
         if (bridge) check(runtime.isFile && shim.isFile) { "bridge runtime libraries are missing from $nativeDir" }
         val shimBytes = if (bridge) shim.readBytes() else ByteArray(0)
+        val embed = options.extras.isNotEmpty()
+        val edits = if (embed) options.manifest.copy(dataInstaller = true) else options.manifest
+        val oldPkg = analysis.manifest?.packageName ?: ""
+        val newPkg = edits.packageName ?: oldPkg
 
         val unsigned = File(output.parentFile, output.name + ".unsigned")
         try {
@@ -108,15 +126,24 @@ class ApkPatcher(private val context: Context) {
                 ZipOutputStream(counter).use { out ->
                     val seen = HashSet<String>()
                     val entries = zip.entries().toList()
+                    var lastDex = 0
                     for ((index, entry) in entries.withIndex()) {
                         progress(index * 80 / entries.size.coerceAtLeast(1))
                         val name = entry.name
                         if (entry.isDirectory || !seen.add(name)) continue
-                        if (isSignatureFile(name) || name.startsWith(MENU_ASSETS)) continue
+                        if (isSignatureFile(name) || name.startsWith(MENU_ASSETS + "classes")) continue
+                        if (embed && (name.startsWith(OBB_ASSETS) || name.startsWith(DATA_ASSETS))) continue
                         if (bridge && name.startsWith("lib/arm64-v8a/")) continue
-                        if (name == "AndroidManifest.xml" && !options.manifest.isEmpty) {
+                        val dexMatch = DEX_NAME.matchEntire(name)
+                        if (dexMatch != null) {
+                            // A dex we added in an earlier patch run is replaced by the current one.
+                            if (embed && entry.size < MAX_IN_MEMORY &&
+                                containsBytes(zip.getInputStream(entry).use { it.readBytes() }, DATA_INSTALLER_DEX_MARK)) continue
+                            lastDex = maxOf(lastDex, dexMatch.groupValues[1].ifEmpty { "1" }.toInt())
+                        }
+                        if (name == "AndroidManifest.xml" && !edits.isEmpty) {
                             val manifest = zip.getInputStream(entry).use { it.readBytes() }
-                            writeDeflated(out, name, AxmlPatcher.apply(manifest, options.manifest))
+                            writeDeflated(out, name, AxmlPatcher.apply(manifest, edits))
                             continue
                         }
                         if (entry.method == ZipEntry.STORED) {
@@ -138,6 +165,35 @@ class ApkPatcher(private val context: Context) {
                             zip.getInputStream(entry).use { it.copyTo(out, 1 shl 16) }
                             out.closeEntry()
                         }
+                    }
+                    if (embed) {
+                        // Our own dex goes in as the app's next classesN.dex so the class loader finds DataInstaller.
+                        ZipFile(context.applicationInfo.sourceDir).use { self ->
+                            val ours = self.entries().asSequence().filter { DEX_NAME.matches(it.name) }
+                                .sortedBy { DEX_NAME.matchEntire(it.name)!!.groupValues[1].ifEmpty { "1" }.toInt() }.toList()
+                            for (dex in ours) {
+                                lastDex++
+                                val dexName = if (lastDex == 1) "classes.dex" else "classes$lastDex.dex"
+                                writeDeflated(out, dexName, self.getInputStream(dex).use { it.readBytes() })
+                            }
+                        }
+                        // Stored inside a deflate stream (level 0): no compression cost and no CRC pass up front.
+                        out.setLevel(Deflater.NO_COMPRESSION)
+                        val buffer = ByteArray(1 shl 20)
+                        for (extra in options.extras) {
+                            extra.write { relative, input ->
+                                val path = embeddedPath(extra.kind, relative, oldPkg, newPkg) ?: return@write
+                                if (!seen.add(path)) return@write
+                                out.putNextEntry(ZipEntry(path).apply { time = FIXED_TIME })
+                                while (true) {
+                                    val n = input.read(buffer)
+                                    if (n < 0) break
+                                    out.write(buffer, 0, n)
+                                }
+                                out.closeEntry()
+                            }
+                        }
+                        out.setLevel(Deflater.DEFAULT_COMPRESSION)
                     }
                     if (bridge && options.inGameMenu) {
                         // The in-game menu is a class of this app; the runtime loads it from these copies of our dex.
@@ -163,6 +219,35 @@ class ApkPatcher(private val context: Context) {
         } finally {
             unsigned.delete()
         }
+    }
+
+    /** Where an OBB/data file goes inside the APK, or null when the path is unusable. */
+    private fun embeddedPath(kind: Extra.Kind, relative: String, oldPkg: String, newPkg: String): String? {
+        var rel = relative.replace('\\', '/').trimStart('/')
+        val parts = rel.split('/')
+        if (rel.isEmpty() || rel.endsWith("/") || parts.any { it == ".." || it == "." }) return null
+        return when (kind) {
+            Extra.Kind.OBB -> {
+                // OBB file names carry the package name (main.<version>.<package>.obb).
+                var file = parts.last()
+                if (oldPkg.isNotEmpty() && newPkg != oldPkg) file = file.replace(".$oldPkg.", ".$newPkg.")
+                OBB_ASSETS + file
+            }
+            Extra.Kind.DATA -> {
+                // Accept archives made from Android/data/<package>/ or from the <package> folder itself.
+                Regex("^(?:.*/)?Android/data/[^/]+/").find(rel)?.let { rel = rel.substring(it.range.last + 1) }
+                for (p in listOf(oldPkg, newPkg)) if (p.isNotEmpty() && rel.startsWith("$p/")) rel = rel.substring(p.length + 1)
+                if (rel.isEmpty()) null else DATA_ASSETS + rel
+            }
+        }
+    }
+
+    private fun containsBytes(haystack: ByteArray, needle: ByteArray): Boolean {
+        outer@ for (i in 0..haystack.size - needle.size) {
+            for (j in needle.indices) if (haystack[i + j] != needle[j]) continue@outer
+            return true
+        }
+        return false
     }
 
     private fun isSignatureFile(name: String): Boolean {
@@ -253,6 +338,10 @@ class ApkPatcher(private val context: Context) {
     companion object {
         private const val KEY_ALIAS = "arm64bridge-apk-signing"
         private const val MENU_ASSETS = "assets/arm64bridge/"
+        private const val OBB_ASSETS = "assets/arm64bridge/obb/"
+        private const val DATA_ASSETS = "assets/arm64bridge/data/"
+        private val DEX_NAME = Regex("classes(\\d*)\\.dex")
+        private val DATA_INSTALLER_DEX_MARK = "Lcom/mesflit/arm64bridge/overlay/DataInstaller;".toByteArray()
         private const val MAX_IN_MEMORY = 8L * 1024 * 1024
         private const val FIXED_TIME = 1230768000000L // 2009-01-01, keeps output reproducible
 

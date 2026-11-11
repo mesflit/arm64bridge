@@ -49,4 +49,14 @@
     <string name="about_source">Source code &amp; releases</string>
     <string name="about_close">Close</string>
     <string name="project_url">https://github.com/mesflit/arm64bridge</string>
+    <string name="extras_title">OBB and data files</string>
+    <string name="extras_help">Files added here are put inside the APK. The app copies them to its own Android/obb and Android/data folders the first time it starts (that first start takes a little longer). For data, choose a ZIP or folder with the contents of Android/data/&lt;package&gt;/ (for example the files folder). The files also stay inside the installed APK, so they use their size twice.</string>
+    <string name="extras_add_obb">Add OBB files…</string>
+    <string name="extras_add_data_zip">Add data (ZIP)…</string>
+    <string name="extras_add_data_folder">Add data folder…</string>
+    <string name="extras_none">No OBB or data files added.</string>
+    <string name="extras_clear">Remove all</string>
+    <string name="extras_obb">OBB: %1$s</string>
+    <string name="extras_data_zip">Data (ZIP): %1$s</string>
+    <string name="extras_data_folder">Data folder: %1$s</string>
 </resources>

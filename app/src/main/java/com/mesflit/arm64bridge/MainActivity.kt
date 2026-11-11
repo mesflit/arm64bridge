@@ -9,6 +9,7 @@ import android.content.pm.PackageInstaller
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.provider.Settings
 import android.view.Menu
@@ -24,6 +25,8 @@ import android.widget.ProgressBar
 import android.widget.Spinner
 import android.widget.TextView
 import java.io.File
+import java.io.FilterInputStream
+import java.util.zip.ZipInputStream
 import java.util.concurrent.Executors
 
 class MainActivity : Activity() {
@@ -46,6 +49,10 @@ class MainActivity : Activity() {
     private lateinit var newPermission: AutoCompleteTextView
     /** Permission name to "keep" checkbox, in display order. */
     private val permissionBoxes = LinkedHashMap<String, CheckBox>()
+    private lateinit var extrasList: TextView
+    private lateinit var clearExtras: Button
+    /** Chosen OBB/data sources: description shown to the user, and the patcher input. */
+    private val extras = ArrayList<Pair<String, ApkPatcher.Extra>>()
 
     private val inputApk get() = File(cacheDir, "input.apk")
     private val patchedApk get() = File(cacheDir, "patched.apk")
@@ -74,6 +81,26 @@ class MainActivity : Activity() {
         orientation.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, AxmlPatcher.ORIENTATIONS.map { it.first })
         newPermission.setAdapter(ArrayAdapter(this, android.R.layout.simple_dropdown_item_1line, COMMON_PERMISSIONS))
         view<Button>(R.id.addPermission).setOnClickListener { addPermissionFromField() }
+        extrasList = view(R.id.extrasList)
+        clearExtras = view(R.id.clearExtras)
+        clearExtras.setOnClickListener { extras.clear(); showExtras() }
+        view<Button>(R.id.addObb).setOnClickListener {
+            startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "*/*"
+                putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+            }, REQUEST_OBB)
+        }
+        view<Button>(R.id.addDataZip).setOnClickListener {
+            startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "*/*"
+                putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream"))
+            }, REQUEST_DATA_ZIP)
+        }
+        view<Button>(R.id.addDataFolder).setOnClickListener {
+            startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQUEST_DATA_FOLDER)
+        }
 
         val abis = Build.SUPPORTED_ABIS.joinToString(", ")
         val native32 = Build.SUPPORTED_32_BIT_ABIS.isNotEmpty()
@@ -121,9 +148,17 @@ class MainActivity : Activity() {
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        val uri = data?.data
-        if (resultCode != RESULT_OK || uri == null) return
+        if (resultCode != RESULT_OK || data == null) return
+        if (requestCode == REQUEST_OBB) {
+            val uris = data.clipData?.let { c -> (0 until c.itemCount).map { c.getItemAt(it).uri } } ?: listOfNotNull(data.data)
+            for (u in uris) addObb(u)
+            showExtras()
+            return
+        }
+        val uri = data.data ?: return
         when (requestCode) {
+            REQUEST_DATA_ZIP -> { addDataZip(uri); showExtras() }
+            REQUEST_DATA_FOLDER -> { addDataFolder(uri); showExtras() }
             REQUEST_PICK -> loadApk(uri)
             REQUEST_SAVE -> patchThen { save(uri) }
         }
@@ -194,6 +229,57 @@ class MainActivity : Activity() {
         newPermission.setText("")
     }
 
+    private fun addObb(uri: Uri) {
+        val name = queryName(uri) ?: return
+        extras += getString(R.string.extras_obb, name) to ApkPatcher.Extra(ApkPatcher.Extra.Kind.OBB) { emit ->
+            contentResolver.openInputStream(uri)!!.use { emit(name, it) }
+        }
+    }
+
+    private fun addDataZip(uri: Uri) {
+        val name = queryName(uri) ?: "data.zip"
+        extras += getString(R.string.extras_data_zip, name) to ApkPatcher.Extra(ApkPatcher.Extra.Kind.DATA) { emit ->
+            ZipInputStream(contentResolver.openInputStream(uri)!!.buffered(1 shl 16)).use { zip ->
+                val entryStream = object : FilterInputStream(zip) { override fun close() {} }
+                while (true) {
+                    val entry = zip.nextEntry ?: break
+                    if (!entry.isDirectory) emit(entry.name, entryStream)
+                }
+            }
+        }
+    }
+
+    private fun addDataFolder(tree: Uri) {
+        val root = DocumentsContract.getTreeDocumentId(tree)
+        val name = root.substringAfterLast('/').substringAfterLast(':')
+        extras += getString(R.string.extras_data_folder, name) to ApkPatcher.Extra(ApkPatcher.Extra.Kind.DATA) { emit ->
+            fun walk(docId: String, prefix: String) {
+                val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, docId)
+                val cols = arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                    DocumentsContract.Document.COLUMN_MIME_TYPE)
+                val items = ArrayList<Triple<String, String, Boolean>>()
+                contentResolver.query(children, cols, null, null, null)?.use { c ->
+                    while (c.moveToNext()) items += Triple(c.getString(0), c.getString(1), c.getString(2) == DocumentsContract.Document.MIME_TYPE_DIR)
+                }
+                for ((id, child, isDir) in items) {
+                    if (isDir) {
+                        walk(id, "$prefix$child/")
+                    } else {
+                        val doc = DocumentsContract.buildDocumentUriUsingTree(tree, id)
+                        contentResolver.openInputStream(doc)!!.use { emit(prefix + child, it) }
+                    }
+                }
+            }
+            // The chosen folder is the package folder (or a folder inside it, such as "files").
+            walk(root, if (name == "files" || name == "cache") "$name/" else "")
+        }
+    }
+
+    private fun showExtras() {
+        extrasList.text = if (extras.isEmpty()) getString(R.string.extras_none) else extras.joinToString("\n") { it.first }
+        clearExtras.visibility = if (extras.isEmpty()) View.GONE else View.VISIBLE
+    }
+
     private fun resetCustomization(a: ApkPatcher.Analysis) {
         val info = a.manifest
         appLabel.setText("")
@@ -210,6 +296,8 @@ class MainActivity : Activity() {
         permissionBoxes.clear()
         permissionList.removeAllViews()
         info?.permissions?.forEach { addPermissionRow(it, true) }
+        extras.clear()
+        showExtras()
         if (info?.permissions.isNullOrEmpty()) {
             permissionList.addView(TextView(this).apply { setText(R.string.custom_no_permissions) })
         }
@@ -303,7 +391,7 @@ class MainActivity : Activity() {
         val a = analysis ?: return
         if (!a.customizable) return
         val edits = collectEdits(a) ?: return
-        val options = ApkPatcher.Options(edits, a.needsBridge && inGameMenu.isChecked)
+        val options = ApkPatcher.Options(edits, a.needsBridge && inGameMenu.isChecked, extras.map { it.second })
         setBusy(true)
         progress.isIndeterminate = false
         log.setText(R.string.patching)
@@ -406,6 +494,9 @@ class MainActivity : Activity() {
     companion object {
         private const val REQUEST_PICK = 1
         private const val REQUEST_SAVE = 2
+        private const val REQUEST_OBB = 3
+        private const val REQUEST_DATA_ZIP = 4
+        private const val REQUEST_DATA_FOLDER = 5
         private const val ACTION_INSTALL_STATUS = "com.mesflit.arm64bridge.INSTALL_STATUS"
         private const val MENU_ABOUT = 1
         private val PACKAGE_REGEX = Regex("^[a-zA-Z][a-zA-Z0-9_]*(\\.[a-zA-Z][a-zA-Z0-9_]*)+$")
