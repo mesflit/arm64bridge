@@ -206,6 +206,9 @@ u32 h2g(const void* p) {
 // ---------------------------------------------------------------------------
 // malloc: size classes carved from slabs, large blocks straight from pages.
 // Every block has an 8 byte header: { u32 tag; u32 value }.
+// Large blocks get one mapped page before and after them: on a real device the heap around a block
+// is mapped too, and games do read a little past the ends of their buffers (Minion Rush reads the
+// 4 bytes before one while copying); here that would hit an unmapped page and crash.
 // ---------------------------------------------------------------------------
 namespace {
 
@@ -238,19 +241,22 @@ u32 g_malloc(u32 size) {
     int c = class_for(size);
     if (c < 0) {
         if (size > 0xF0000000u) return 0;
-        u32 total = round_up(size + 8, g_page);
+        u32 total = round_up(size, g_page) + 2 * g_page;
         u32 a = page_alloc(total);
         if (!a) return 0;
-        Hdr* h = g2h<Hdr>(a);
+        u32 user = a + g_page;
+        Hdr* h = hdr_of(user);
         h->tag = kTagLarge;
         h->value = total;
-        return a + 8;
+        return user;
     }
     std::lock_guard<std::mutex> lk(g_malloc_mu);
     if (!g_freelist[c]) {
         u32 cell = kClassSizes[c] + 8;
-        u32 slab = page_alloc(kSlab);
+        // Slabs are padded like large blocks (see above).
+        u32 slab = page_alloc(kSlab + 2 * g_page);
         if (!slab) return 0;
+        slab += g_page;
         u32 n = kSlab / cell;
         for (u32 i = 0; i < n; i++) {
             u32 user = slab + i * cell + 8;
@@ -280,7 +286,8 @@ void g_free(u32 ptr) {
         return;
     }
     if (h->tag == kTagLarge) {
-        page_free(ptr - 8, h->value);
+        h->tag = kTagFree;
+        page_free(ptr - g_page, h->value);
         return;
     }
     if ((h->tag & 0xFFFFFF00u) == kTagSmall) {
@@ -298,7 +305,7 @@ void g_free(u32 ptr) {
 u32 g_usable_size(u32 ptr) {
     if (!ptr || !mem_contains(ptr)) return 0;
     Hdr* h = hdr_of(ptr);
-    if (h->tag == kTagLarge) return h->value - 8;
+    if (h->tag == kTagLarge) return h->value - 2 * g_page;
     if ((h->tag & 0xFFFFFF00u) == kTagSmall && (h->tag & 0xFF) < (u32)kNumClasses) return kClassSizes[h->tag & 0xFF];
     if (h->tag == kTagAligned) {
         u32 orig = h->value;
