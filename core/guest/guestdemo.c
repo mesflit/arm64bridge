@@ -33,6 +33,32 @@ static volatile int g_ctor_ran;
 
 __attribute__((constructor)) static void on_load_ctor(void) { g_ctor_ran = 42; }
 
+/* The start of the Gameloft engine's frame limiter (same instructions), for the FPS booster test:
+   reads the clock with gettimeofday and returns the s64 frame time stored at obj+8. */
+__asm__(
+    ".text\n.arm\n.align 2\n"
+    ".type test_frame_limiter, %function\n"
+    "test_frame_limiter:\n"
+    "  push {r4, r5, r6, r7, r8, r9, r10, r11, lr}\n"
+    "  sub sp, sp, #20\n"
+    "  mov r4, r0\n"
+    "  add r0, sp, #12\n"
+    "  mov r1, #0\n"
+    "  bl gettimeofday\n"
+    "  ldr r2, [sp, #16]\n"
+    "  movw r7, #0x4240\n"
+    "  ldr r0, [sp, #12]\n"
+    "  movt r7, #0xf\n"
+    "  str r4, [sp, #8]\n"
+    "  asr r3, r2, #31\n"
+    "  ldr r6, [r4, #16]!\n"
+    "  smlal r2, r3, r0, r7\n"
+    "  ldrd r0, r1, [r4, #-8]\n"
+    "  add sp, sp, #20\n"
+    "  pop {r4, r5, r6, r7, r8, r9, r10, r11, pc}\n"
+    ".size test_frame_limiter, .-test_frame_limiter\n");
+long long test_frame_limiter(void* obj);
+
 /* ---- bound through exported Java_* symbols ---- */
 
 JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_add(JNIEnv* env, jclass cls, jint a, jint b) {
@@ -328,4 +354,10 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
     if ((*env)->RegisterNatives(env, cls, methods, 2) != JNI_OK) return JNI_ERR;
     __android_log_print(4, "guestdemo", "JNI_OnLoad done, pointer size %d", (int)sizeof(void*));
     return JNI_VERSION_1_6;
+}
+
+/* Runs the frame limiter code on an object whose frame time is `target` us; returns what the code read. */
+JNIEXPORT jlong JNICALL Java_com_mesflit_arm64bridge_GuestDemo_frameLimiter(JNIEnv* env, jclass cls, jlong target) {
+    struct { unsigned char enabled; unsigned char pad[7]; long long frame_us; long long last_us; } obj = {1, {0}, target, 0};
+    return test_frame_limiter(&obj);
 }

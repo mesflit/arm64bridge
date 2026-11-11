@@ -32,10 +32,10 @@ import java.util.Locale;
 public final class GameOverlay implements Application.ActivityLifecycleCallbacks {
     private static final String TAG_VIEW = "arm64bridge-overlay";
     private static final String PREFS = "arm64bridge";
-    private static final String[] LIMITER_LABELS = {"FPS booster: off", "FPS booster: shorter waits", "FPS booster: no waits"};
+    private static final String[] LIMITER_LABELS = {"FPS booster: off (game limit)", "FPS booster: 60 FPS", "FPS booster: unlimited"};
     private static final String PROJECT_URL = "https://github.com/mesflit/arm64bridge";
 
-    /** 0 = leave the game's frame limiter alone, 1 = halve its waits, 2 = skip its waits. */
+    /** 0 = leave the game's frame limiter alone, 1 = 60 FPS, 2 = no limit. */
     private static native void nativeSetLimiter(int mode);
     /** Frames per second drawn through the bridge since the previous call, or a negative value if unknown. */
     private static native float nativeFps();
@@ -88,7 +88,7 @@ public final class GameOverlay implements Application.ActivityLifecycleCallbacks
         panel.setVisibility(View.GONE);
         final TextView fps = label(activity, "FPS: –", dp);
         final TextView limiterButton = label(activity, LIMITER_LABELS[limiter], dp);
-        final TextView note = label(activity, "Shortens or skips the game's frame waits. Some games wait on the clock instead and keep their limit. If the game runs too fast, switch it off.", dp);
+        final TextView note = label(activity, "Raises the game's own frame limit. If the game runs too fast or stutters, switch back to off.", dp);
         note.setTextSize(10);
         final TextView about = label(activity, "ARM64Bridge · hold the icon to open the project page", dp);
         about.setTextSize(10);

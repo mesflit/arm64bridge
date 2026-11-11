@@ -28,6 +28,7 @@ public final class GuestDemo {
     public static native int posix();
     public static native void remember(String s);
     public static native int recallLength();
+    public static native long frameLimiter(long frameMicros);
     // Registered from JNI_OnLoad with RegisterNatives:
     public native String registered(int x, String s);
     public static native boolean sameEnv();
@@ -57,6 +58,8 @@ public final class GuestDemo {
                 "Hello Android from 32-bit ARM code! pi=3.1416 big=1234567890123 hex=beef".equals(g));
         int[] arr = {1, 2, 3, 4};
         check(sb, failed, "sumArray", sumArray(arr) == 10 && arr[0] == 2 && arr[3] == 8);
+        // FPS booster off: the limiter code must see the game's own frame time.
+        check(sb, failed, "frame limiter (booster off)", frameLimiter(33333L) == 33333L);
         GuestDemo d = new GuestDemo();
         String cb = d.callbacks(21);
         check(sb, failed, "callbacks -> " + cb + " counter=" + d.counter,

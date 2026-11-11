@@ -105,11 +105,17 @@ u64 cpu_total_host_calls();
 std::string cpu_profile_report(int tid, double seconds);
 extern std::atomic<u64> g_frames;
 extern std::atomic<int> g_guest_threads;
-// 0 = leave the game's frame limiter alone, 1 = halve its sleeps, 2 = skip them (render thread only).
+// FPS booster: 0 = leave the game's frame limiter alone, 1 = 60 FPS, 2 = no limit. Known clock-based limiters
+// get a new frame time (frame_cap.cpp); for other games the render thread's sleeps are halved (1) or skipped (2).
 extern std::atomic<int> g_frame_limiter;
 // Frame limiter probe (limiter_probe.cpp). kind: 0 gettimeofday, 1 clock_gettime, 2 sleep, 3 sched_yield.
 void probe_time_call(int kind, u64 sleep_us = 0);
 void probe_frame();
+// FPS booster for clock-based frame limiters (frame_cap.cpp).
+struct Module;
+void frame_cap_scan(Module* m);
+void frame_cap_on_clock(Cpu& c);
+bool frame_cap_known();
 extern std::atomic<int> g_render_tid;  // thread that last called eglSwapBuffers
 [[noreturn]] void guest_crash(Cpu& c, const char* why);
 // Implemented by the loader: "libfoo.so+0x1234 (symbol)".

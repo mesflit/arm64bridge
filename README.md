@@ -46,10 +46,12 @@ Options shown when applicable:
 
 - **FPS display** (always, for apps that get the bridge): a small floating button inside the game shows the frame
   rate (no overlay permission needed). Tap it for the menu, drag it to move it, hold it to open this project page.
-- **FPS booster** (optional): adds controls to that menu which shorten or skip the game's own frame waits. This
-  helps games that limit their frame rate with sleeps. Games that wait on the clock (for example Minion Rush) keep
-  their limit for now; the bridge logs where such a limiter is so it can be supported. If a game ties its speed to
-  the frame rate it runs too fast with the booster on; switch it off in the same menu.
+- **FPS booster** (optional): adds a switch to that menu: off (the game's own limit), 60 FPS or unlimited (the
+  display still paces frames). Games whose frame limiter waits on the clock get a new frame time; the bridge
+  recognises the Gameloft engine limiter (Minion Rush and other Gameloft games of that time) by its code. For other
+  games the render thread's sleeps are halved or skipped. If a game ties its speed to the frame rate it runs too
+  fast with the booster on; switch it off in the same menu. The log also records where a game's limiter is
+  ("frame limiter probe"), which helps adding support for more engines.
 
 Customization (optional, works on any APK):
 

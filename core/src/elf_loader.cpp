@@ -389,6 +389,7 @@ Module* load_locked(const std::string& name, std::string& err) {
     for (u32 off : d.needed_off) m->needed.push_back(d.str(off));
     g_modules.push_back(m);
     LOGI("loaded %s at 0x%08x-0x%08x (%zu exports)", name.c_str(), m->base, m->base + m->size, m->exports.size());
+    frame_cap_scan(m);
 
     for (auto& dep : m->needed) {
         std::string dn = base_name(dep);

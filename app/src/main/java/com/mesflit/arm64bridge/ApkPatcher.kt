@@ -205,7 +205,7 @@ class ApkPatcher(private val context: Context) {
                                 writeDeflated(out, MENU_ASSETS + dex.name, self.getInputStream(dex).use { it.readBytes() })
                             }
                         }
-                        if (options.fpsBooster) writeDeflated(out, MENU_ASSETS + "fps-booster", ByteArray(0))
+                        if (options.fpsBooster) writeDeflated(out, MENU_ASSETS + "fps-booster", "1".toByteArray())
                     }
                     if (bridge) {
                         // The bridge runtime plus one shim per original library.

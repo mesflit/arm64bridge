@@ -141,7 +141,8 @@ void do_mmap(Cpu& c, i64 offset_bytes, u32 addr, u32 len, int prot, int flags, i
 // frames are shortened or skipped.
 int limiter_mode_for_this_thread() {
     int mode = g_frame_limiter.load(std::memory_order_relaxed);
-    if (!mode) return 0;
+    // A known clock-based limiter is handled by changing its frame time (frame_cap.cpp).
+    if (!mode || frame_cap_known()) return 0;
     static thread_local int tid = (int)syscall(SYS_gettid);
     return tid == g_render_tid.load(std::memory_order_relaxed) ? mode : 0;
 }
@@ -457,6 +458,7 @@ void register_libc_thunks() {
     });
     reg("gettimeofday", +[](GTimeval* tv, void*) -> int {
         probe_time_call(0);
+        if (Cpu* c = Cpu::current_or_null()) frame_cap_on_clock(*c);
         timeval h;
         gettimeofday(&h, nullptr);
         if (tv) { tv->tv_sec = (i32)h.tv_sec; tv->tv_usec = (i32)h.tv_usec; }

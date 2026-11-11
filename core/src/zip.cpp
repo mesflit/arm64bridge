@@ -94,6 +94,8 @@ bool zip_extract(const std::string& zip_path, const std::string& entry, std::vec
             if (csize != usize) return true;
             memcpy(out.data(), z.data + data_off, usize);
             ok = true;
+        } else if (usize == 0) {
+            ok = true;  // empty file (zlib would reject the empty output buffer)
         } else if (method == 8) {
             z_stream zs;
             memset(&zs, 0, sizeof(zs));
