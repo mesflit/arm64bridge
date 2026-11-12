@@ -131,11 +131,29 @@ that releases can update each other. To sign with your own key, define the repos
 
 | Path | Contents |
 | --- | --- |
-| `core/src` | Runtime: guest memory, CPU (dynarmic), ELF loader, JNI bridge, libc/pthread/GL/audio thunks |
+| `core/src` | Runtime (see below) |
 | `core/shim` | The 64-bit shim that stands in for each 32-bit library |
 | `core/guest` | 32-bit ARM test/demo library |
 | `core/test` | End-to-end test under a desktop JVM |
-| `app` | Android app: APK analysis, patching, signing, installing |
+| `app/.../MainActivity.kt` | Main screen: choose an APK, patch, install or save |
+| `app/.../CustomizeForm.kt`, `PermissionEditor.kt`, `ExtrasForm.kt` | Customization options, permissions, OBB/data files |
+| `app/.../ApkPatcher.kt`, `Axml.kt`, `AxmlPatcher.kt` | APK analysis, patching and signing; binary manifest editing |
+| `app/.../ApkInstaller.kt`, `AboutDialog.kt` | Installing through PackageInstaller; About dialog |
+| `app/.../overlay/` | Code that runs inside patched apps: in-game menu, value editor, OBB/data installer |
+
+Runtime files in `core/src`:
+
+| File | Contents |
+| --- | --- |
+| `guest_mem.*` | Guest address space (arenas below 4 GiB), page allocator, malloc |
+| `cpu.*` | ARMv7 CPU on dynarmic, host function traps, kernel helpers, crash reports |
+| `elf_loader.*` | Loader for 32-bit ARM libraries |
+| `dl_thunks.cpp` | dlopen/dlsym compatible with Android 2.x (old-style soinfo handles) |
+| `jni_bridge.*`, `trampoline.S` | JNI between the 64-bit VM and 32-bit code |
+| `libc_thunks.cpp`, `stdio_thunks.cpp`, `math_thunks.cpp`, `pthread_thunks.cpp`, `posix_extra_thunks.cpp`, `misc_thunks.cpp` | C library for guest code |
+| `android_thunks.cpp`, `gles_thunks.cpp`, `opensl_thunks.cpp`, `zlib_thunks.cpp` | Android, OpenGL ES, OpenSL ES and zlib APIs |
+| `frame_cap.cpp`, `limiter_probe.cpp` | FPS booster and frame limiter diagnostics |
+| `api.cpp` | Entry points (shim, NativeBridge), log file, heartbeat, in-game menu loader |
 
 ## License
 
