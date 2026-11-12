@@ -39,6 +39,7 @@ public final class GuestDemo {
     public static native int oldBionic();
     public static native int stopTheWorld();
     public static native int jitCode();
+    public static native int cpuinfo();
     public static native String reflected(java.lang.reflect.Method m, java.lang.reflect.Constructor<?> ctor);
     // Registered from JNI_OnLoad with RegisterNatives:
     public native String registered(int x, String s);
@@ -96,6 +97,8 @@ public final class GuestDemo {
         check(sb, failed, "signals: stop and resume threads like a GC (" + stw + ")", stw == 0);
         int jit = jitCode();
         check(sb, failed, "code generated at run time, flushed by range (" + jit + ")", jit == 0);
+        int cpu = cpuinfo();
+        check(sb, failed, "/proc/cpuinfo of a 32-bit ARM CPU (" + cpu + ")", cpu == 0);
         String refl;
         try {
             refl = reflected(GuestDemo.class.getMethod("describe", long.class, double.class, String.class, float.class),

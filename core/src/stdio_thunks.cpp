@@ -1,5 +1,7 @@
 // stdio: FILE handles, printf/scanf families with guest varargs.
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include <unistd.h>
+
 #include <mutex>
 #include <unordered_map>
 
@@ -315,8 +317,16 @@ void register_stdio_thunks() {
         thunk_register_data(names[i], var);
     }
 
-    reg("fopen", +[](const char* p, const char* m) -> u32 { return new_file(fopen(p, m)); });
-    reg("fopen64", +[](const char* p, const char* m) -> u32 { return new_file(fopen(p, m)); });
+    auto open_file = +[](const char* p, const char* m) -> u32 {
+        int v = guest_proc_open(p);
+        if (v == -2) return new_file(fopen(p, m));
+        if (v < 0) return 0;
+        FILE* f = fdopen(v, "r");
+        if (!f) close(v);
+        return new_file(f);
+    };
+    reg("fopen", open_file);
+    reg("fopen64", open_file);
     reg("fdopen", +[](int fd, const char* m) -> u32 { return new_file(fdopen(fd, m)); });
     reg("tmpfile", +[]() -> u32 { return new_file(tmpfile()); });
     reg("freopen", +[](const char* p, const char* m, u32 g) -> u32 {

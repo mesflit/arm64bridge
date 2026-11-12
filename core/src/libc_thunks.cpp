@@ -86,6 +86,12 @@ void guest_qsort(Cpu& c, u32 base, u32 n, u32 size, u32 cmp) {
     }
 }
 
+int translate_open_flags(int gf);
+int guest_open(const char* p, int fl, int mode) {
+    int v = guest_proc_open(p);
+    return v != -2 ? v : open(p, translate_open_flags(fl), mode);
+}
+
 int translate_open_flags(int gf) {
 #if defined(__aarch64__) || defined(__arm__)
     return gf;
@@ -597,10 +603,14 @@ void register_libc_thunks() {
     reg("tzset", +[]() { tzset(); });
 
     // ------------------------------------------------------------- files / unistd
-    RAW(open) { ArgReader a(c); const char* p = STR(); int fl = A32(); int mode = A32(); c.set_ret32((u32)open(p, translate_open_flags(fl), mode)); });
-    RAW(open64) { ArgReader a(c); const char* p = STR(); int fl = A32(); int mode = A32(); c.set_ret32((u32)open(p, translate_open_flags(fl), mode)); });
-    RAW(__open_2) { ArgReader a(c); const char* p = STR(); int fl = A32(); c.set_ret32((u32)open(p, translate_open_flags(fl), 0)); });
-    RAW(openat) { ArgReader a(c); int d = A32(); const char* p = STR(); int fl = A32(); int mode = A32(); c.set_ret32((u32)openat(d, p, translate_open_flags(fl), mode)); });
+    RAW(open) { ArgReader a(c); const char* p = STR(); int fl = A32(); int mode = A32(); c.set_ret32((u32)guest_open(p, fl, mode)); });
+    RAW(open64) { ArgReader a(c); const char* p = STR(); int fl = A32(); int mode = A32(); c.set_ret32((u32)guest_open(p, fl, mode)); });
+    RAW(__open_2) { ArgReader a(c); const char* p = STR(); int fl = A32(); c.set_ret32((u32)guest_open(p, fl, 0)); });
+    RAW(openat) {
+        ArgReader a(c); int d = A32(); const char* p = STR(); int fl = A32(); int mode = A32();
+        int v = guest_proc_open(p);
+        c.set_ret32((u32)(v != -2 ? v : openat(d, p, translate_open_flags(fl), mode)));
+    });
     reg("creat", +[](const char* p, int mode) -> int { return creat(p, mode); });
     reg("close", +[](int fd) -> int { return close(fd); });
     reg("read", +[](int fd, void* b, size_t n) -> ssize_t {

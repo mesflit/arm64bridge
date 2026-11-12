@@ -775,3 +775,39 @@ JNIEXPORT jstring JNICALL Java_com_mesflit_arm64bridge_GuestDemo_reflected(JNIEn
     (*env)->CallObjectMethod(env, sb, append, (*env)->NewStringUTF(env, " sb"));
     return (jstring)(*env)->CallObjectMethod(env, sb, to_string);
 }
+
+#ifdef __ANDROID__
+#include <fcntl.h>
+#else
+char* fgets(char* s, int n, FILE* f);
+int strncmp(const char* a, const char* b, size_t n);
+char* strstr(const char* h, const char* n);
+int open(const char* path, int flags, ...);
+long read(int fd, void* b, size_t n);
+#define O_RDONLY 0
+#endif
+
+/* /proc/cpuinfo as a 32-bit ARM process sees it: Mono looks for "thumb" on the Features line. */
+JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_cpuinfo(JNIEnv* env, jclass cls) {
+    (void)env; (void)cls;
+    FILE* f = fopen("/proc/cpuinfo", "r");
+    if (!f) return 1;
+    char line[512];
+    int processor = 0, thumb = 0, neon = 0;
+    while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, "Processor", 9) == 0 && strstr(line, "(v7")) processor = 1;
+        if (strncmp(line, "Features", 8) == 0) {
+            if (strstr(line, "thumb")) thumb = 1;
+            if (strstr(line, "neon")) neon = 1;
+        }
+    }
+    fclose(f);
+    if (!processor) return 2;
+    if (!thumb || !neon) return 3;
+    int fd = open("/proc/cpuinfo", O_RDONLY);
+    if (fd < 0) return 4;
+    char b[16];
+    long n = (long)read(fd, b, sizeof(b));
+    close(fd);
+    return n == 16 && memcmp(b, "Processor", 9) == 0 ? 0 : 5;
+}
