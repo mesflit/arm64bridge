@@ -164,6 +164,8 @@ void thunk_register(const char* name, TrapFn fn, void* ud);
 void thunk_register_data(const char* name, u32 guest_addr);
 // Returns the guest address for an imported symbol or 0 if the bridge does not provide it.
 u32 thunk_resolve(const std::string& name);
+// Every symbol the bridge implements, with its guest address (creates all call stubs).
+std::vector<std::pair<std::string, u32>> thunk_resolve_all();
 bool thunk_exists(const std::string& name);
 // Stub for an unknown import: logs when called and returns 0.
 u32 thunk_missing(const std::string& name);

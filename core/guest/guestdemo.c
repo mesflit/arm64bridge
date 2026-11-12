@@ -495,3 +495,47 @@ JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_compat(JNIEnv* env
     usleep(200000); /* the thread joins itself and ends */
     return failed;
 }
+
+/* Old-style dlopen handle: a soinfo with an ELF hash table, read the way the Android 2.x linker does.
+   Returns 0 when a symbol found that way is the function dlsym returns, and it works. */
+void* dlopen(const char* name, int flags);
+void* dlsym(void* handle, const char* name);
+static unsigned old_elf_hash(const char* name) {
+    unsigned h = 0, g;
+    while (*name) {
+        h = (h << 4) + (unsigned char)*name++;
+        g = h & 0xf0000000;
+        h ^= g;
+        h ^= g >> 24;
+    }
+    return h;
+}
+JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_soinfo(JNIEnv* env, jclass cls) {
+    struct sym { unsigned name, value, size; unsigned char info, other; unsigned short shndx; };
+    char* si = dlopen("libc.so", 0);
+    if (!si) return 1;
+    if (si[0] != 'l' || si[3] != 'c') return 2;                  /* name */
+    unsigned base = *(unsigned*)(si + 0x8c);
+    const char* strtab = *(const char**)(si + 0xac);
+    struct sym* symtab = *(struct sym**)(si + 0xb0);
+    unsigned nbucket = *(unsigned*)(si + 0xb4);
+    unsigned* bucket = *(unsigned**)(si + 0xbc);
+    unsigned* chain = *(unsigned**)(si + 0xc0);
+    const char* wanted[] = {"strlen", "malloc", "pthread_create", "__errno", "does_not_exist"};
+    for (int w = 0; w < 5; w++) {
+        void* found = 0;
+        for (unsigned n = bucket[old_elf_hash(wanted[w]) % nbucket]; n; n = chain[n]) {
+            const char* a = strtab + symtab[n].name;
+            const char* b = wanted[w];
+            while (*a && *a == *b) { a++; b++; }
+            if (*a || *b) continue;
+            if ((symtab[n].info >> 4) != 1 || symtab[n].shndx == 0) continue;
+            found = (void*)(symtab[n].value + base);
+            break;
+        }
+        if (w == 4) { if (found) return 8; continue; }
+        if (!found || found != dlsym(si, wanted[w])) return 16 + w;
+        if (w == 0 && ((unsigned (*)(const char*))found)("hello") != 5) return 4;
+    }
+    return 0;
+}

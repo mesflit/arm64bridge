@@ -9,6 +9,8 @@
 
 #include <cmath>
 #include <mutex>
+#include <string>
+#include <unordered_map>
 
 #include "elf_loader.h"
 #include "guest_types.h"
@@ -30,6 +32,84 @@ u32 g_dlerror_buf = 0;
 void set_dlerror(const std::string& e) {
     t_dlerror = e;
     t_dlerror_set = true;
+}
+
+// ---- dlopen handles of system libraries ----
+// On Android before 5.0 dlopen() returned a pointer to the linker's own record of the library
+// (struct soinfo), and code that brings its own copy of that linker (Glu's libmono loader) looks
+// symbols up directly in it. So the handle of a library that the bridge implements is a real
+// structure in guest memory with the old layout and an ELF hash table of every bridge function:
+//   0x00 name[128]   0x8c base   0x90 size   0xa4 next   0xa8 flags   0xac strtab   0xb0 symtab
+//   0xb4 nbucket     0xb8 nchain 0xbc bucket 0xc0 chain
+std::mutex g_soinfo_mu;
+std::unordered_map<std::string, u32> g_fake_soinfos;  // library name -> guest soinfo
+u32 g_sys_strtab = 0, g_sys_symtab = 0, g_sys_bucket = 0, g_sys_chain = 0, g_sys_nbucket = 0, g_sys_nchain = 0;
+
+u32 elf_hash(const char* name) {
+    u32 h = 0, g;
+    for (const unsigned char* p = (const unsigned char*)name; *p; p++) {
+        h = (h << 4) + *p;
+        g = h & 0xf0000000u;
+        h ^= g;
+        h ^= g >> 24;
+    }
+    return h;
+}
+
+void build_system_symbol_table() {
+    if (g_sys_symtab) return;
+    auto syms = thunk_resolve_all();
+    u32 n = (u32)syms.size();
+    size_t str_size = 1;
+    for (auto& kv : syms) str_size += kv.first.size() + 1;
+    g_sys_strtab = g_calloc(1, (u32)str_size);
+    g_sys_symtab = g_calloc(n + 1, 16);  // Elf32_Sym: name, value, size, info, other, shndx
+    g_sys_nbucket = n | 1;
+    g_sys_nchain = n + 1;
+    g_sys_bucket = g_calloc(g_sys_nbucket, 4);
+    g_sys_chain = g_calloc(g_sys_nchain, 4);
+    u32 str_off = 1;
+    for (u32 i = 0; i < n; i++) {
+        const std::string& name = syms[i].first;
+        memcpy(g2h<char>(g_sys_strtab + str_off), name.c_str(), name.size() + 1);
+        u32* sym = g2h<u32>(g_sys_symtab + (i + 1) * 16);
+        sym[0] = str_off;
+        sym[1] = syms[i].second;  // base is 0, so the value is the address
+        sym[2] = 0;
+        *g2h<u8>(g_sys_symtab + (i + 1) * 16 + 12) = (1 << 4) | 2;  // STB_GLOBAL, STT_FUNC
+        *g2h<u16>(g_sys_symtab + (i + 1) * 16 + 14) = 1;            // defined (not SHN_UNDEF)
+        u32 b = elf_hash(name.c_str()) % g_sys_nbucket;
+        *g2h<u32>(g_sys_chain + (i + 1) * 4) = *g2h<u32>(g_sys_bucket + b * 4);
+        *g2h<u32>(g_sys_bucket + b * 4) = i + 1;
+        str_off += (u32)name.size() + 1;
+    }
+    LOGI("dlopen: symbol table of the bridge for old-style handles: %u symbols", n);
+}
+
+u32 fake_soinfo(const std::string& name) {
+    std::lock_guard<std::mutex> lk(g_soinfo_mu);
+    auto it = g_fake_soinfos.find(name);
+    if (it != g_fake_soinfos.end()) return it->second;
+    build_system_symbol_table();
+    u32 si = g_calloc(1, 1024);
+    snprintf(g2h<char>(si), 128, "%s", name.c_str());
+    *g2h<u32>(si + 0xa8) = 1;  // FLAG_LINKED
+    *g2h<u32>(si + 0xac) = g_sys_strtab;
+    *g2h<u32>(si + 0xb0) = g_sys_symtab;
+    *g2h<u32>(si + 0xb4) = g_sys_nbucket;
+    *g2h<u32>(si + 0xb8) = g_sys_nchain;
+    *g2h<u32>(si + 0xbc) = g_sys_bucket;
+    *g2h<u32>(si + 0xc0) = g_sys_chain;
+    g_fake_soinfos[name] = si;
+    return si;
+}
+
+bool is_fake_soinfo(u32 handle) {
+    if (handle == kHandleBridge) return true;
+    std::lock_guard<std::mutex> lk(g_soinfo_mu);
+    for (auto& kv : g_fake_soinfos)
+        if (kv.second == handle) return true;
+    return false;
 }
 
 Module* module_from_handle(u32 h) {
@@ -174,11 +254,11 @@ void register_data_symbols() {
 void register_misc_thunks() {
     // ---------------------------------------------------------------- libdl
     reg("dlopen", +[](const char* name, int) -> u32 {
-        if (!name) return kHandleBridge;
+        if (!name) return fake_soinfo("");
         std::string n = name;
         size_t slash = n.rfind('/');
         if (slash != std::string::npos) n = n.substr(slash + 1);
-        if (loader_is_system_lib(n)) return kHandleBridge;
+        if (loader_is_system_lib(n)) return fake_soinfo(n);
         std::string err;
         Module* m = loader_load(n, &err);
         if (!m) {
@@ -191,8 +271,9 @@ void register_misc_thunks() {
     reg("dlsym", +[](u32 handle, const char* name) -> u32 {
         u32 a = 0;
         if (Module* m = module_from_handle(handle)) a = m->find(name);
-        if (!a && (handle == 0 || handle >= 0xFFFFFFFE || handle == kHandleBridge || !module_from_handle(handle))) {
-            if (handle != kHandleBridge) a = loader_lookup(name);
+        const bool system = is_fake_soinfo(handle);
+        if (!a && (handle == 0 || handle >= 0xFFFFFFFE || system || !module_from_handle(handle))) {
+            if (!system) a = loader_lookup(name);
             if (!a) a = thunk_resolve(name);
         }
         if (!a) set_dlerror(std::string("undefined symbol: ") + name);

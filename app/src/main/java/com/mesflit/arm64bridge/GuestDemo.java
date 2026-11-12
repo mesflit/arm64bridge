@@ -33,6 +33,7 @@ public final class GuestDemo {
     public static native int kuser();
     public static native int mmapFixed();
     public static native int compat(String scratchFile);
+    public static native int soinfo();
     // Registered from JNI_OnLoad with RegisterNatives:
     public native String registered(int x, String s);
     public static native boolean sameEnv();
@@ -77,6 +78,8 @@ public final class GuestDemo {
             // reported by the check below
         }
         check(sb, failed, "FILE descriptor field, self join (" + compat + ")", compat == 0);
+        int soinfo = soinfo();
+        check(sb, failed, "old-style dlopen handle (" + soinfo + ")", soinfo == 0);
         // Game loop frame sleep: 10 ms into a 30 ms frame it must sleep about 20 ms (booster off).
         long sleepStart = System.nanoTime();
         int slept = frameSleep(10);

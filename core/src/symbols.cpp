@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <mutex>
 #include <unordered_map>
+#include <vector>
 
 #include "thunk.h"
 
@@ -52,6 +53,19 @@ u32 thunk_resolve(const std::string& name) {
     u32 addr = trap_create(name.c_str(), it->second.fn, it->second.ud);
     resolved()[name] = addr;
     return addr;
+}
+
+std::vector<std::pair<std::string, u32>> thunk_resolve_all() {
+    thunks_init();
+    std::lock_guard<std::mutex> lk(g_mu);
+    for (auto& kv : impls()) {
+        if (resolved().count(kv.first)) continue;
+        resolved()[kv.first] = trap_create(kv.first.c_str(), kv.second.fn, kv.second.ud);
+    }
+    std::vector<std::pair<std::string, u32>> out;
+    for (auto& kv : resolved())
+        if (!kv.first.empty() && kv.first[0] != '?') out.emplace_back(kv.first, kv.second);
+    return out;
 }
 
 u32 thunk_missing(const std::string& name) {
