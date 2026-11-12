@@ -22,9 +22,16 @@ bool mem_contains(u64 host_addr);
 // True if the address lies in pages that are currently allocated (safe to read). Never blocks.
 bool mem_is_mapped(u32 addr, u32 len = 1);
 
-// Changes whenever translated guest code may have become stale.
+// Changes whenever all translated guest code may have become stale (libraries loaded or unloaded).
 u64 mem_code_epoch();
 void mem_bump_code_epoch();
+
+// Guest code that changed in a known range: a JIT compiler inside the app (Mono) flushes the
+// instruction cache for every piece of code it generates. Only that range is retranslated.
+void mem_invalidate_code(u32 start, u32 len);
+u64 mem_code_ranges_seq();
+// The ranges recorded after `seen`. False if too many were recorded since: then clear everything.
+bool mem_code_ranges_since(u64 seen, std::vector<std::pair<u32, u32>>& out);
 
 // Page level allocation (always zero filled, read/write on the host side).
 u32 page_alloc(u32 size, bool exec = false);

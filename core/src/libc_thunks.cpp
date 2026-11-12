@@ -237,7 +237,7 @@ void register_libc_thunks() {
     reg("mprotect", +[](u32 addr, u32 len, int prot) -> int {
         if (prot & PROT_EXEC) {
             page_mark_exec(addr, len);
-            mem_bump_code_epoch();
+            mem_invalidate_code(addr, len);
         }
         return 0;
     });
@@ -245,8 +245,11 @@ void register_libc_thunks() {
     reg("mlock", +[](u32, u32) -> int { return 0; });
     reg("munlock", +[](u32, u32) -> int { return 0; });
     reg("msync", +[](void* p, size_t n, int f) -> int { return msync(p, n, f); });
-    reg("cacheflush", +[](u32, u32, int) -> int { mem_bump_code_epoch(); return 0; });
-    reg("__clear_cache", +[](u32, u32) { mem_bump_code_epoch(); });
+    reg("cacheflush", +[](u32 start, u32 end, int) -> int {
+        mem_invalidate_code(start, end > start ? end - start : 0);
+        return 0;
+    });
+    reg("__clear_cache", +[](u32 start, u32 end) { mem_invalidate_code(start, end > start ? end - start : 0); });
 
     // ------------------------------------------------------------- string
     reg("memcpy", +[](void* d, const void* s, size_t n) -> void* { return memcpy(d, s, n); });

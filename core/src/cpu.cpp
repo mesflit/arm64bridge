@@ -327,6 +327,7 @@ Cpu::Cpu() {
     if (!stack_base || !tls_block) fatal("cannot allocate guest thread state");
     idle_regs[13] = stack_base + stack_size - 64;
     epoch = mem_code_epoch();
+    code_ranges_seen = mem_code_ranges_seq();
     tid = (int)gettid();
     prof_count.assign(kMaxTraps, 0);
     prof_ticks.assign(kMaxTraps, 0);
@@ -523,7 +524,27 @@ void Cpu::on_svc(u32 swi) {
         if (pending_signals.load(std::memory_order_relaxed)) signals_deliver_pending(*this);
     }
     // Stale translations (library loaded, guest JIT flushed its cache): leave so the loop can clear them.
-    if (epoch != mem_code_epoch()) lvl->jit->HaltExecution(Dynarmic::HaltReason::UserDefined2);
+    if (epoch != mem_code_epoch() || code_ranges_seen != mem_code_ranges_seq())
+        lvl->jit->HaltExecution(Dynarmic::HaltReason::UserDefined2);
+}
+
+// Drops translations of guest code that changed: everything after a library was loaded or unloaded,
+// only the flushed ranges after a JIT compiler inside the app generated code.
+void Cpu::sync_translations() {
+    bool clear_all = epoch != mem_code_epoch();
+    std::vector<std::pair<u32, u32>> ranges;
+    const u64 seq = mem_code_ranges_seq();
+    if (!clear_all && seq != code_ranges_seen && !mem_code_ranges_since(code_ranges_seen, ranges)) clear_all = true;
+    epoch = mem_code_epoch();
+    code_ranges_seen = seq;
+    for (CpuLevel* l : levels) {
+        if (clear_all) {
+            if (!l->jit->IsExecuting()) l->jit->ClearCache();
+            else l->jit->HaltExecution(Dynarmic::HaltReason::UserDefined2);
+        } else {
+            for (auto& r : ranges) l->jit->InvalidateCacheRange(r.first, r.second);  // deferred if executing
+        }
+    }
 }
 
 u64 Cpu::call(u32 fn, const u32* words, size_t nwords) {
@@ -551,12 +572,7 @@ u64 Cpu::call(u32 fn, const u32* words, size_t nwords) {
     depth++;
     lvl->returned = false;
     for (;;) {
-        if (epoch != mem_code_epoch()) {
-            epoch = mem_code_epoch();
-            for (CpuLevel* l : levels)
-                if (!l->jit->IsExecuting()) l->jit->ClearCache();
-                else l->jit->HaltExecution(Dynarmic::HaltReason::UserDefined2);
-        }
+        sync_translations();
         lvl->jit->ClearHalt(Dynarmic::HaltReason::UserDefined1);
         lvl->jit->ClearHalt(Dynarmic::HaltReason::UserDefined2);
         lvl->jit->ClearHalt(Dynarmic::HaltReason::UserDefined3);

@@ -97,8 +97,8 @@ u32 guest_syscall_args(Cpu& c, u32 nr, const u32 a[6]) {
             long r = syscall(SYS_futex, g2h(a[0]), (int)a[1], (int)a[2], a3, g2h(a[4]), (int)a[5]);
             return wrap(r);
         }
-        case 0xf0002:  // ARM cacheflush
-            mem_bump_code_epoch();
+        case 0xf0002:  // ARM cacheflush(start, end, flags)
+            mem_invalidate_code(a[0], a[1] > a[0] ? a[1] - a[0] : 0);
             return 0;
         case 0xf0005:  // ARM set_tls
             c.tls_block = a[0];

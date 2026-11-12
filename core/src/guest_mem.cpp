@@ -58,6 +58,31 @@ bool mem_contains(u64 a) {
 u64 mem_code_epoch() { return g_epoch.load(std::memory_order_relaxed); }
 void mem_bump_code_epoch() { g_epoch.fetch_add(1, std::memory_order_relaxed); }
 
+namespace {
+constexpr size_t kRangeLog = 1024;
+std::mutex g_ranges_mu;
+std::pair<u32, u32> g_ranges[kRangeLog];  // ring buffer: entry n % kRangeLog is range number n
+std::atomic<u64> g_ranges_seq{0};
+}  // namespace
+
+void mem_invalidate_code(u32 start, u32 len) {
+    if (!len) return;
+    std::lock_guard<std::mutex> lk(g_ranges_mu);
+    u64 n = g_ranges_seq.load(std::memory_order_relaxed);
+    g_ranges[n % kRangeLog] = {start, len};
+    g_ranges_seq.store(n + 1, std::memory_order_release);
+}
+
+u64 mem_code_ranges_seq() { return g_ranges_seq.load(std::memory_order_acquire); }
+
+bool mem_code_ranges_since(u64 seen, std::vector<std::pair<u32, u32>>& out) {
+    std::lock_guard<std::mutex> lk(g_ranges_mu);
+    u64 now = g_ranges_seq.load(std::memory_order_relaxed);
+    if (now - seen > kRangeLog) return false;
+    for (u64 n = seen; n < now; n++) out.push_back(g_ranges[n % kRangeLog]);
+    return true;
+}
+
 bool mem_is_mapped(u32 addr, u32 len) {
     if (!mem_contains(addr) || !mem_contains((u64)addr + len - 1)) return false;
     if (!in_arena(addr)) return true;  // external mapping

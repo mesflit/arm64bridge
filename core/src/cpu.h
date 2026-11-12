@@ -46,6 +46,7 @@ struct Cpu {
     u32 thread_id = 0;     // guest pthread_t
     int depth = 0;
     u64 epoch = 0;
+    u64 code_ranges_seen = 0;  // mem_code_ranges_seq() last applied to this thread's JITs
     u64 fault_addr = 0;     // address of the last invalid guest memory access
     int fault_type = 0;     // 1 = read, 2 = write
     bool crash_reported = false;
@@ -91,6 +92,7 @@ struct Cpu {
 
     // Called by translated code for "svc #n" (n = trap slot + 1, 0 = raw system call).
     void on_svc(u32 swi);
+    void sync_translations();
 
     // Guest signals (guest_signals.cpp): pending signal bits (bit n-1 = signal n), how many blocking
     // host calls the thread is in, whether it waits in sigsuspend, and a counter to wake that wait.

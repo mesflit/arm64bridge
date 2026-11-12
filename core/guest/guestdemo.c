@@ -729,3 +729,28 @@ JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_stopTheWorld(JNIEn
     pthread_join(b, 0);
     return failed;
 }
+
+/* Like a JIT compiler (Mono): writes code, flushes that range, runs it, rewrites it. 0 when every
+   call runs the code that was there at the time. */
+__attribute__((target("arm"), noinline)) static void flush_range(char* start, char* end, int raw) {
+    if (!raw) { __builtin___clear_cache(start, end); return; }
+    register long r0 __asm__("r0") = (long)start;  /* cacheflush(start, end, 0) as a system call */
+    register long r1 __asm__("r1") = (long)end;
+    register long r2 __asm__("r2") = 0;
+    register long r7 __asm__("r7") = 0xf0002;
+    __asm__ volatile("svc #0" : "+r"(r0) : "r"(r1), "r"(r2), "r"(r7) : "memory");
+}
+JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_jitCode(JNIEnv* env, jclass cls) {
+    unsigned* code = mmap(NULL, 4096, PROT_READ | PROT_WRITE | 4 /* PROT_EXEC */, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (code == MAP_FAILED) return 1;
+    for (int i = 0; i < 200; i++) {
+        unsigned* fn = code + (i % 4) * 8;   /* reuse four slots: old code at the same address */
+        fn[0] = 0xe3a00000u | (i & 0xff);     /* mov r0, #i */
+        fn[1] = 0xe12fff1eu;                  /* bx lr */
+        flush_range((char*)fn, (char*)(fn + 2), i & 1);
+        int got = ((int (*)(void))fn)();
+        if (got != (i & 0xff)) return 2;
+    }
+    munmap(code, 4096);
+    return 0;
+}
