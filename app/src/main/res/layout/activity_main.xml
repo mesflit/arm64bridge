@@ -56,6 +56,14 @@
             android:text="@string/in_game_menu"
             android:visibility="gone" />
 
+        <CheckBox
+            android:id="@+id/valueEditor"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/value_editor"
+            android:visibility="gone" />
+
         <LinearLayout
             android:id="@+id/customize"
             android:layout_width="match_parent"

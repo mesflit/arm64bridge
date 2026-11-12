@@ -53,6 +53,13 @@ Options shown when applicable:
   fast with the booster on; switch it off in the same menu. The log also records where a game's limiter is
   ("frame limiter probe"), which helps adding support for more engines.
 
+- **Value editor** (optional, works on any APK): adds a tool to the in-game menu that finds a number in the
+  game's memory (coins, lives, …) and changes or freezes it: search the value the game shows, change it in the game,
+  refine with the new value, and repeat until a few results are left. It runs inside the game's own process and
+  uses `/proc/self/mem`, so it needs no root, and it works in bridged 32-bit games and in native 64-bit games
+  (those get the floating menu with only this entry). Types: 8/16/32/64-bit integers, float, double. Values that a
+  game keeps on its server cannot be changed.
+
 Customization (optional, works on any APK):
 
 - **App name**: the name shown in the launcher.

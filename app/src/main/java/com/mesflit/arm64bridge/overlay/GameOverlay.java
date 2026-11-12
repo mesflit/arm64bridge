@@ -44,19 +44,45 @@ public final class GameOverlay implements Application.ActivityLifecycleCallbacks
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private int limiter;
+    private boolean bridged;      // running inside the bridge runtime (frame rate and booster available)
     private boolean booster;
+    private boolean valueEditor;
+    private String version = "";
 
     /**
      * Called by the bridge runtime once the class is loaded. The frame rate is always shown;
-     * [booster] (an option of the patcher) adds the FPS booster controls.
+     * [booster] and [valueEditor] (options of the patcher) add the FPS booster controls and the
+     * value editor.
      */
-    public static void install(Application app, boolean booster) {
+    public static void install(Application app, boolean booster, boolean valueEditor) {
         GameOverlay overlay = new GameOverlay();
+        overlay.bridged = true;
+        overlay.valueEditor = valueEditor;
+        overlay.version = readVersion(app);
         overlay.booster = booster;
         overlay.limiter = booster ? app.getSharedPreferences(PREFS, 0).getInt("limiter", 0) : 0;
         if (overlay.limiter < 0 || overlay.limiter >= LIMITER_LABELS.length) overlay.limiter = 0;
         nativeSetLimiter(overlay.limiter);
         app.registerActivityLifecycleCallbacks(overlay);
+    }
+
+    /** For apps that run without the bridge (native 64-bit apps): only the value editor. Called by [OverlayInstaller]. */
+    static void installStandalone(Application app) {
+        GameOverlay overlay = new GameOverlay();
+        overlay.valueEditor = true;
+        overlay.version = readVersion(app);
+        app.registerActivityLifecycleCallbacks(overlay);
+    }
+
+    /** The patcher stores its version in the APK. */
+    private static String readVersion(Application app) {
+        try (java.io.InputStream in = app.getAssets().open("arm64bridge/version")) {
+            byte[] b = new byte[64];
+            int n = in.read(b);
+            return n > 0 ? new String(b, 0, n, "UTF-8").trim() : "";
+        } catch (Exception e) {
+            return "";
+        }
     }
 
     private void attach(final Activity activity) {
@@ -92,22 +118,33 @@ public final class GameOverlay implements Application.ActivityLifecycleCallbacks
         final TextView limiterButton = label(activity, LIMITER_LABELS[limiter], dp);
         final TextView note = label(activity, "Raises the game's own frame limit. If the game runs too fast or stutters, switch back to off.", dp);
         note.setTextSize(10);
-        String version;
-        try {
-            version = nativeVersion();
-        } catch (Throwable t) {
-            version = "?";
+        String version = this.version;
+        if (version.isEmpty() && bridged) {
+            try {
+                version = nativeVersion();
+            } catch (Throwable t) {
+                version = "?";
+            }
         }
+        final TextView editorButton = label(activity, "Value editor…", dp);
+        editorButton.setOnClickListener(v -> {
+            try {
+                ValueEditor.get().show(activity);
+            } catch (RuntimeException ignored) {
+                // Never let the menu break the game.
+            }
+        });
         final TextView about = label(activity, "ARM64Bridge " + version + " · hold the icon to open the project page", dp);
         about.setTextSize(10);
         LinearLayout.LayoutParams row = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         row.topMargin = (int) (3 * dp);
-        panel.addView(fps, row);
+        if (bridged) panel.addView(fps, row);
         if (booster) {
             panel.addView(limiterButton, row);
             panel.addView(note, row);
         }
+        if (valueEditor) panel.addView(editorButton, row);
         panel.addView(about, row);
         root.addView(handleRow, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
@@ -182,7 +219,7 @@ public final class GameOverlay implements Application.ActivityLifecycleCallbacks
         lp.leftMargin = (int) (8 * dp);
         activity.addContentView(root, lp);
 
-        handler.post(new Runnable() {
+        if (bridged) handler.post(new Runnable() {
             @Override
             public void run() {
                 if (activity.isFinishing() || activity.isDestroyed()) return;

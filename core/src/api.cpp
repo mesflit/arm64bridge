@@ -344,15 +344,16 @@ void load_overlay(JNIEnv* env) {
         std::vector<u8> marker;
         bool booster = zip_extract(g_apk_path, "assets/arm64bridge/fps-booster", marker);
         if (!booster) g_frame_limiter.store(0);
-        jmethodID install = env->GetStaticMethodID(overlay, "install", "(Landroid/app/Application;Z)V");
+        bool editor = zip_extract(g_apk_path, "assets/arm64bridge/value-editor", marker);
+        jmethodID install = env->GetStaticMethodID(overlay, "install", "(Landroid/app/Application;ZZ)V");
         if (env->RegisterNatives(overlay, natives, 3) != JNI_OK || clear_exc(env) || !install) {
             clear_exc(env);
             LOGW("in-game menu: could not bind the menu");
             return;
         }
-        env->CallStaticVoidMethod(overlay, install, app, (jboolean)booster);
+        env->CallStaticVoidMethod(overlay, install, app, (jboolean)booster, (jboolean)editor);
         if (clear_exc(env)) LOGW("in-game menu: installation failed");
-        else LOGI("in-game menu installed (FPS booster %s)", booster ? "on" : "off");
+        else LOGI("in-game menu installed (FPS booster %s, value editor %s)", booster ? "on" : "off", editor ? "on" : "off");
     });
 }
 

@@ -61,12 +61,14 @@ class ApkPatcher(private val context: Context) {
 
     /**
      * Apps that get the bridge always show their frame rate in a small in-game menu; [fpsBooster] adds the
-     * FPS booster controls to it.
+     * FPS booster controls to it. [valueEditor] adds the value editor; it also works in apps without the
+     * bridge, which then get the menu with only that entry.
      */
     class Options(
         val manifest: AxmlPatcher.Edits,
         val fpsBooster: Boolean = false,
         val extras: List<Extra> = emptyList(),
+        val valueEditor: Boolean = false,
     )
 
     fun analyze(apk: File): Analysis {
@@ -118,7 +120,10 @@ class ApkPatcher(private val context: Context) {
         if (bridge) check(runtime.isFile && shim.isFile) { "bridge runtime libraries are missing from $nativeDir" }
         val shimBytes = if (bridge) shim.readBytes() else ByteArray(0)
         val embed = options.extras.isNotEmpty()
-        val edits = if (embed) options.manifest.copy(dataInstaller = true) else options.manifest
+        // Without the bridge runtime the menu is started by a provider of ours inside the app.
+        val standaloneMenu = options.valueEditor && !bridge
+        val addDex = embed || standaloneMenu
+        val edits = options.manifest.copy(dataInstaller = embed, overlayInstaller = standaloneMenu)
         val oldPkg = analysis.manifest?.packageName ?: ""
         val newPkg = edits.packageName ?: oldPkg
 
@@ -134,13 +139,13 @@ class ApkPatcher(private val context: Context) {
                         progress(index * 80 / entries.size.coerceAtLeast(1))
                         val name = entry.name
                         if (entry.isDirectory || !seen.add(name)) continue
-                        if (isSignatureFile(name) || name.startsWith(MENU_ASSETS + "classes") || name == MENU_ASSETS + "fps-booster") continue
+                        if (isSignatureFile(name) || name.startsWith(MENU_ASSETS + "classes") || name in MENU_MARKERS) continue
                         if (embed && (name.startsWith(OBB_ASSETS) || name.startsWith(DATA_ASSETS))) continue
                         if (bridge && name.startsWith("lib/arm64-v8a/")) continue
                         val dexMatch = DEX_NAME.matchEntire(name)
                         if (dexMatch != null) {
                             // A dex we added in an earlier patch run is replaced by the current one.
-                            if (embed && entry.size < MAX_IN_MEMORY &&
+                            if (addDex && entry.size < MAX_IN_MEMORY &&
                                 containsBytes(zip.getInputStream(entry).use { it.readBytes() }, DATA_INSTALLER_DEX_MARK)) continue
                             lastDex = maxOf(lastDex, dexMatch.groupValues[1].ifEmpty { "1" }.toInt())
                         }
@@ -169,8 +174,10 @@ class ApkPatcher(private val context: Context) {
                             out.closeEntry()
                         }
                     }
-                    if (embed) {
-                        // Our own dex goes in as the app's next classesN.dex so the class loader finds DataInstaller.
+                    writeDeflated(out, MENU_ASSETS + "version", versionName().toByteArray())
+                    if (options.valueEditor) writeDeflated(out, MENU_ASSETS + "value-editor", "1".toByteArray())
+                    if (addDex) {
+                        // Our own dex goes in as the app's next classesN.dex so the class loader finds our providers.
                         ZipFile(context.applicationInfo.sourceDir).use { self ->
                             val ours = self.entries().asSequence().filter { DEX_NAME.matches(it.name) }
                                 .sortedBy { DEX_NAME.matchEntire(it.name)!!.groupValues[1].ifEmpty { "1" }.toInt() }.toList()
@@ -180,6 +187,8 @@ class ApkPatcher(private val context: Context) {
                                 writeDeflated(out, dexName, self.getInputStream(dex).use { it.readBytes() })
                             }
                         }
+                    }
+                    if (embed) {
                         // Stored inside a deflate stream (level 0): no compression cost and no CRC pass up front.
                         out.setLevel(Deflater.NO_COMPRESSION)
                         val buffer = ByteArray(1 shl 20)
@@ -245,6 +254,9 @@ class ApkPatcher(private val context: Context) {
             }
         }
     }
+
+    private fun versionName(): String =
+        runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: "?"
 
     private fun containsBytes(haystack: ByteArray, needle: ByteArray): Boolean {
         outer@ for (i in 0..haystack.size - needle.size) {
@@ -342,10 +354,11 @@ class ApkPatcher(private val context: Context) {
     companion object {
         private const val KEY_ALIAS = "arm64bridge-apk-signing"
         private const val MENU_ASSETS = "assets/arm64bridge/"
+        private val MENU_MARKERS = setOf(MENU_ASSETS + "fps-booster", MENU_ASSETS + "value-editor", MENU_ASSETS + "version")
         private const val OBB_ASSETS = "assets/arm64bridge/obb/"
         private const val DATA_ASSETS = "assets/arm64bridge/data/"
         private val DEX_NAME = Regex("classes(\\d*)\\.dex")
-        private val DATA_INSTALLER_DEX_MARK = "Lcom/mesflit/arm64bridge/overlay/DataInstaller;".toByteArray()
+        private val DATA_INSTALLER_DEX_MARK = "Lcom/mesflit/arm64bridge/overlay/GameOverlay;".toByteArray()
         private const val MAX_IN_MEMORY = 8L * 1024 * 1024
         private const val FIXED_TIME = 1230768000000L // 2009-01-01, keeps output reproducible
 

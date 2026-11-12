@@ -39,6 +39,7 @@ class MainActivity : Activity() {
     private lateinit var raiseTarget: CheckBox
     private lateinit var legacyScaling: CheckBox
     private lateinit var inGameMenu: CheckBox
+    private lateinit var valueEditor: CheckBox
     private lateinit var customize: View
     private lateinit var appLabel: EditText
     private lateinit var appPackage: EditText
@@ -70,6 +71,7 @@ class MainActivity : Activity() {
         raiseTarget = view(R.id.raiseTargetSdk)
         legacyScaling = view(R.id.legacyScaling)
         inGameMenu = view(R.id.inGameMenu)
+        valueEditor = view(R.id.valueEditor)
         customize = view(R.id.customize)
         appLabel = view(R.id.appLabel)
         appPackage = view(R.id.appPackage)
@@ -363,6 +365,8 @@ class MainActivity : Activity() {
         legacyScaling.isChecked = false
         inGameMenu.visibility = if (a.needsBridge) View.VISIBLE else View.GONE
         inGameMenu.isChecked = false
+        valueEditor.visibility = if (a.customizable) View.VISIBLE else View.GONE
+        valueEditor.isChecked = false
         installButton.setText(if (a.needsBridge) R.string.patch_install else R.string.apply_install)
         saveButton.setText(if (a.needsBridge) R.string.patch_save else R.string.apply_save)
         resetCustomization(a)
@@ -391,7 +395,7 @@ class MainActivity : Activity() {
         val a = analysis ?: return
         if (!a.customizable) return
         val edits = collectEdits(a) ?: return
-        val options = ApkPatcher.Options(edits, a.needsBridge && inGameMenu.isChecked, extras.map { it.second })
+        val options = ApkPatcher.Options(edits, a.needsBridge && inGameMenu.isChecked, extras.map { it.second }, valueEditor.isChecked)
         setBusy(true)
         progress.isIndeterminate = false
         log.setText(R.string.patching)

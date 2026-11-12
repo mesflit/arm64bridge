@@ -6,6 +6,7 @@
     <string name="raise_target_sdk">Raise targetSdkVersion to %1$d (required by this Android version to install the app)</string>
     <string name="legacy_scaling">Low-resolution rendering (optional): run the app in Android\'s screen compatibility mode. Use this for very old games whose graphics and buttons look tiny on this screen.</string>
     <string name="in_game_menu">FPS booster (optional): adds controls to the in-game menu that shorten or skip the game\'s frame waits. The frame rate is always shown in a small floating button; hold that button to open the ARM64Bridge project page.</string>
+    <string name="value_editor">Value editor (optional): adds a tool to the in-game menu that finds a number in the game\'s memory (coins, lives…) and changes or freezes it. Works in 32-bit and in 64-bit games; values kept on a game server cannot be changed.</string>
     <string name="patch_install">Patch &amp; install</string>
     <string name="patch_save">Patch &amp; save…</string>
     <string name="apply_install">Apply &amp; install</string>
