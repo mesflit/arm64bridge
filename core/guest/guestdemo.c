@@ -425,6 +425,9 @@ JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_kuser(JNIEnv* env,
     return failed;
 }
 
+#ifdef __ANDROID__  /* built with the NDK's headers (APK) */
+#include <sys/mman.h>
+#else              /* built with the minimal headers of the desktop test */
 void* mmap(void* addr, unsigned len, int prot, int flags, int fd, long offset);
 int munmap(void* addr, unsigned len);
 #define PROT_NONE 0
@@ -434,6 +437,7 @@ int munmap(void* addr, unsigned len);
 #define MAP_FIXED 0x10
 #define MAP_ANONYMOUS 0x20
 #define MAP_FAILED ((void*)-1)
+#endif
 
 /* mmap at requested addresses, as a library loader inside a game does; returns 0 when everything works. */
 JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_mmapFixed(JNIEnv* env, jclass cls) {
@@ -635,22 +639,33 @@ JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_oldBionic(JNIEnv* 
 /* The way Boehm GC (Mono) stops threads: SIGPWR to each, whose handler acknowledges with a semaphore and
    waits in sigsuspend until SIGXCPU resumes it. One thread runs guest code, one waits in a condition
    variable. Returns 0 when both stop and resume. */
-/* 32-bit bionic declarations (the guest is built with minimal headers). */
+#ifdef __ANDROID__  /* built with the NDK's headers (APK) */
+#include <pthread.h>
+#include <semaphore.h>
+#include <signal.h>
+typedef sigset_t g_sigset_t;
+typedef struct sigaction g_sigaction_t;
+typedef sem_t g_sem_t;
+typedef pthread_cond_t g_cond_t;
+#define G_HANDLER(sa) (sa).sa_handler
+#else              /* the minimal headers of the desktop test: 32-bit bionic declarations */
 typedef unsigned long g_sigset_t;
-struct g_sigaction { void (*handler)(int); g_sigset_t mask; int flags; void (*restorer)(void); };
+typedef struct { void (*handler)(int); g_sigset_t mask; int flags; void (*restorer)(void); } g_sigaction_t;
 typedef struct { volatile unsigned int count; int reserved[3]; } g_sem_t;
-#define G_SIGXCPU 24
-#define G_SIGPWR 30
-int sigaction(int sig, const struct g_sigaction* act, struct g_sigaction* old);
+typedef struct { int value; } g_cond_t;
+int sigaction(int sig, const g_sigaction_t* act, g_sigaction_t* old);
 int sigemptyset(g_sigset_t* set);
 int sigsuspend(const g_sigset_t* mask);
 int pthread_kill(pthread_t t, int sig);
 int sem_init(g_sem_t* s, int pshared, unsigned value);
 int sem_post(g_sem_t* s);
 int sem_trywait(g_sem_t* s);
-typedef struct { int value; } g_cond_t;  /* bionic 32-bit pthread_cond_t */
 int pthread_cond_wait(g_cond_t* c, pthread_mutex_t* m);
 int pthread_cond_broadcast(g_cond_t* c);
+#define G_HANDLER(sa) (sa).handler
+#endif
+#define G_SIGXCPU 24
+#define G_SIGPWR 30
 static g_sem_t g_ack;
 static volatile int g_resumed, g_stop_workers, g_spins;
 static pthread_mutex_t g_wait_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -680,10 +695,11 @@ static int wait_acks(int n) {
     return n;
 }
 JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_stopTheWorld(JNIEnv* env, jclass cls) {
-    struct g_sigaction sa = {0};
-    sa.handler = on_suspend;
+    g_sigaction_t sa;
+    memset(&sa, 0, sizeof(sa));
+    G_HANDLER(sa) = on_suspend;
     sigaction(G_SIGPWR, &sa, 0);
-    sa.handler = on_restart;
+    G_HANDLER(sa) = on_restart;
     sigaction(G_SIGXCPU, &sa, 0);
     sem_init(&g_ack, 0, 0);
     g_resumed = g_stop_workers = g_spins = 0;
