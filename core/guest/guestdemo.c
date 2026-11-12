@@ -811,3 +811,13 @@ JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_cpuinfo(JNIEnv* en
     close(fd);
     return n == 16 && memcmp(b, "Processor", 9) == 0 ? 0 : 5;
 }
+
+/* Ignores an exception thrown by a Java method and goes on with other JNI calls, as old games do. */
+JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_ignoredException(JNIEnv* env, jclass cls) {
+    jmethodID boom = (*env)->GetStaticMethodID(env, cls, "boom", "()V");
+    if (!boom) return 1;
+    (*env)->CallStaticVoidMethod(env, cls, boom);
+    jclass str = (*env)->FindClass(env, "java/lang/String");
+    if (!str) return 2;
+    return (*env)->ExceptionCheck(env) ? 3 : 0;
+}

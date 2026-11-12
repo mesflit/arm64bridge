@@ -40,6 +40,7 @@ public final class GuestDemo {
     public static native int stopTheWorld();
     public static native int jitCode();
     public static native int cpuinfo();
+    public static native int ignoredException();
     public static native String reflected(java.lang.reflect.Method m, java.lang.reflect.Constructor<?> ctor);
     // Registered from JNI_OnLoad with RegisterNatives:
     public native String registered(int x, String s);
@@ -49,6 +50,7 @@ public final class GuestDemo {
     // Re-enters the guest library while it is in the middle of a JNI call (nested emulation).
     public static int twice(int v) { return add(v, v); }
     public static String describe(long a, double b, String c, float d) { return a + "|" + b + "|" + c + "|" + d; }
+    public static void boom() { throw new SecurityException("test: ignored by guest code"); }
     public int bump(int by) { counter += by; return counter; }
 
     /** Runs every check and returns a human readable report. The first line is "PASS" or "FAIL". */
@@ -99,6 +101,8 @@ public final class GuestDemo {
         check(sb, failed, "code generated at run time, flushed by range (" + jit + ")", jit == 0);
         int cpu = cpuinfo();
         check(sb, failed, "/proc/cpuinfo of a 32-bit ARM CPU (" + cpu + ")", cpu == 0);
+        int ign = ignoredException();
+        check(sb, failed, "JNI call after an ignored Java exception (" + ign + ")", ign == 0);
         String refl;
         try {
             refl = reflected(GuestDemo.class.getMethod("describe", long.class, double.class, String.class, float.class),

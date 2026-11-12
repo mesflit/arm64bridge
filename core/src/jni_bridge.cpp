@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstddef>
+#include <cstring>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -342,8 +343,63 @@ std::string reflected_shorty(JNIEnv* env, jobject member) {
     return shorty;
 }
 
+// A Java exception left pending by guest code.
+//
+// The JNI rules allow only a few functions (ExceptionCheck, Release*, Delete*Ref...) while an exception
+// is pending; ART aborts the process for any other. Old games often ignore exceptions that their
+// Android version never threw: Samurai vs Zombies reads the IMEI (getDeviceId throws a
+// SecurityException since Android 10) and calls FindClass right after. As an old Android would have
+// let the game go on, the exception is logged and cleared before such a call.
+void clear_ignored_exception(JNIEnv* env, const char* call) {
+    jthrowable t = env->ExceptionOccurred();
+    env->ExceptionClear();
+    static std::atomic<int> logged{0};
+    if (logged.fetch_add(1) >= 20 || !t) {
+        if (t) env->DeleteLocalRef(t);
+        return;
+    }
+    std::string what = "?";
+    jclass tc = env->GetObjectClass(t);
+    jmethodID to_string = env->GetMethodID(tc, "toString", "()Ljava/lang/String;");
+    jstring js = to_string ? (jstring)env->CallObjectMethod(t, to_string) : nullptr;
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    if (js) {
+        const char* chars = env->GetStringUTFChars(js, nullptr);
+        if (chars) what = chars;
+        env->ReleaseStringUTFChars(js, chars);
+        env->DeleteLocalRef(js);
+    }
+    env->DeleteLocalRef(tc);
+    env->DeleteLocalRef(t);
+    LOGW("guest code called %s with a pending Java exception it did not handle; cleared it: %s", call, what.c_str());
+}
+
+bool allowed_with_pending_exception(const char* name) {
+    static const char* const kAllowed[] = {"Exception", "Release", "Delete", "MonitorExit", "PushLocalFrame", "PopLocalFrame", "Throw"};
+    for (const char* a : kAllowed)
+        if (strstr(name, a)) return true;
+    return false;
+}
+
+struct Slot {
+    TrapFn fn;
+    void* ud;
+    const char* name;
+};
+
+void checked_slot(Cpu& c, void* ud) {
+    Slot* s = static_cast<Slot*>(ud);
+    JNIEnv* env = jni_host_env(c);
+    if (env->ExceptionCheck()) clear_ignored_exception(env, s->name);
+    s->fn(c, s->ud);
+}
+
 void set_slot(size_t index, const char* name, TrapFn fn, void* ud) {
     if (index >= kIfaceSlots) fatal("JNI slot out of range");
+    if (!allowed_with_pending_exception(name)) {
+        ud = new Slot{fn, ud, name};
+        fn = checked_slot;
+    }
     g2h<u32>(g_guest_iface)[index] = trap_create(name, fn, ud);
 }
 
