@@ -32,6 +32,7 @@ public final class GuestDemo {
     public static native int frameSleep(int elapsedMillis);
     public static native int kuser();
     public static native int mmapFixed();
+    public static native int compat(String scratchFile);
     // Registered from JNI_OnLoad with RegisterNatives:
     public native String registered(int x, String s);
     public static native boolean sameEnv();
@@ -67,6 +68,15 @@ public final class GuestDemo {
         check(sb, failed, "kernel user helpers (" + kuser + ")", kuser == 0);
         int mm = mmapFixed();
         check(sb, failed, "mmap at requested addresses (" + mm + ")", mm == 0);
+        int compat = -1;
+        try {
+            java.io.File tmp = java.io.File.createTempFile("a64b", ".tmp");
+            compat = compat(tmp.getPath());
+            tmp.delete();
+        } catch (java.io.IOException e) {
+            // reported by the check below
+        }
+        check(sb, failed, "FILE descriptor field, self join (" + compat + ")", compat == 0);
         // Game loop frame sleep: 10 ms into a 30 ms frame it must sleep about 20 ms (booster off).
         long sleepStart = System.nanoTime();
         int slept = frameSleep(10);

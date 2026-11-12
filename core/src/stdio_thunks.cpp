@@ -169,6 +169,10 @@ FILE* hf(u32 g) {
 u32 new_file(FILE* f) {
     if (!f) return 0;
     u32 g = g_calloc(1, kGuestFileSize);
+    // Old bionic headers read the descriptor straight from the structure (fileno() as a macro):
+    // struct __sFILE { unsigned char* _p; int _r; int _w; short _flags; short _file; ... }.
+    *g2h<i16>(g + 12) = 0x10;  // __SRW
+    *g2h<i16>(g + 14) = (i16)fileno(f);
     std::lock_guard<std::mutex> lk(g_file_mu);
     files()[g] = f;
     return g;
@@ -299,6 +303,10 @@ FILE* guest_file_get(u32 g) { return hf(g); }
 void register_stdio_thunks() {
     // Standard streams: old NDKs reference the __sF array, newer ones the stdin/stdout/stderr pointers.
     g_sF = g_calloc(3, kGuestFileSize);
+    for (int i = 0; i < 3; i++) {  // descriptor field of stdin, stdout and stderr (see new_file)
+        *g2h<i16>(g_sF + i * kGuestFileSize + 12) = i == 0 ? 0x4 : 0x8;  // __SRD / __SWR
+        *g2h<i16>(g_sF + i * kGuestFileSize + 14) = (i16)i;
+    }
     thunk_register_data("__sF", g_sF);
     const char* names[] = {"stdin", "stdout", "stderr"};
     for (int i = 0; i < 3; i++) {

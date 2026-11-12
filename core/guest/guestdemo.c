@@ -459,3 +459,34 @@ JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_mmapFixed(JNIEnv* 
     }
     return failed;
 }
+
+FILE* fopen(const char* path, const char* mode);
+int fileno(FILE* f);
+int fputs(const char* s, FILE* f);
+int fflush(FILE* f);
+int fclose(FILE* f);
+int fsync(int fd);
+int usleep(unsigned us);
+
+/* Old bionic headers read the descriptor from the FILE structure; a thread joining itself must not fail. */
+static void* join_self(void* arg) {
+    pthread_t* self = arg;
+    return (void*)(long)pthread_join(*self, NULL);
+}
+JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_compat(JNIEnv* env, jclass cls, jstring path) {
+    int failed = 0;
+    const char* p = (*env)->GetStringUTFChars(env, path, NULL);
+    FILE* f = fopen(p, "w");
+    (*env)->ReleaseStringUTFChars(env, path, p);
+    if (!f) return 1;
+    short fd_in_struct = ((short*)f)[7]; /* _file at offset 14 */
+    if (fd_in_struct != fileno(f) || fd_in_struct < 3) failed |= 2;
+    fputs("x", f);
+    fflush(f);
+    if (fsync(fd_in_struct) != 0) failed |= 4;
+    fclose(f);
+    pthread_t t;
+    if (pthread_create(&t, NULL, join_self, &t) != 0) return failed | 8;
+    usleep(200000); /* the thread joins itself and ends */
+    return failed;
+}

@@ -120,7 +120,9 @@ u32 tm_buf() {
 }
 
 void do_mmap(Cpu& c, i64 offset_bytes, u32 addr, u32 len, int prot, int flags, int fd) {
-    if (len == 0) {
+    static std::atomic<int> failures{0};
+    if (len == 0 || len > 0xF0000000u) {
+        if (failures.fetch_add(1) < 8) LOGW("mmap(0x%08x, %u, prot %d, flags 0x%x, fd %d): invalid length", addr, len, prot, flags, fd);
         errno = EINVAL;
         c.set_ret32(0xFFFFFFFF);
         return;
@@ -148,6 +150,8 @@ void do_mmap(Cpu& c, i64 offset_bytes, u32 addr, u32 len, int prot, int flags, i
         res = page_map_file(len, prot, hflags, fd, offset_bytes);
     }
     if (!res) {
+        if (failures.fetch_add(1) < 8)
+            LOGW("mmap(0x%08x, %u, prot %d, flags 0x%x, fd %d, offset %lld) failed", addr, len, prot, flags, fd, (long long)offset_bytes);
         errno = ENOMEM;
         res = 0xFFFFFFFF;
     }

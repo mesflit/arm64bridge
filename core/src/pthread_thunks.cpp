@@ -242,6 +242,17 @@ void register_pthread_thunks() {
     reg("pthread_join", +[](u32 id, u32* ret) -> int {
         ThreadRec* t = g_threads.get(id);
         if (!t) return ESRCH;
+        if (pthread_equal(t->host, pthread_self())) {
+            // A thread joining itself (seen when a network callback destroys the object that owns its
+            // thread). Android of the time did not report this; today it is EDEADLK, which such games
+            // turn into an uncaught C++ exception. Treat it as a detach and let the thread finish.
+            static std::atomic<int> logged{0};
+            if (logged.fetch_add(1) < 4) LOGW("pthread_join: thread %u joins itself, treated as detach", id);
+            pthread_detach(t->host);
+            t->detached = true;
+            if (ret) *ret = 0;
+            return 0;
+        }
         int r = pthread_join(t->host, nullptr);
         if (r == 0) {
             if (ret) *ret = t->retval.load();
