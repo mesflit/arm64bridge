@@ -155,6 +155,22 @@ void do_mmap(Cpu& c, i64 offset_bytes, u32 addr, u32 len, int prot, int flags, i
         errno = ENOMEM;
         res = 0xFFFFFFFF;
     }
+    // The first calls in full, with the code of the caller: a library loader inside a game is picky
+    // about what mmap returns, and this shows what it checks.
+    static std::atomic<int> shown{0};
+    if (shown.fetch_add(1) < 4) {
+        u32 lr = c.r[14];
+        LOGI("mmap(0x%08x, %u, prot %d, flags 0x%x, fd %d, offset %lld) = 0x%08x, called from %s (%s)", addr, len, prot, flags, fd,
+             (long long)offset_bytes, res, describe_address(lr & ~1u).c_str(), (lr & 1) ? "thumb" : "arm");
+        u32 at = lr & ~1u;
+        for (u32 a2 = (at - 192) & ~15u; a2 < at + 320; a2 += 16) {
+            if (!mem_is_mapped(a2, 16)) continue;
+            const u8* b = g2h<u8>(a2);
+            std::string line = strfmt("    %08x:", a2);
+            for (int i = 0; i < 16; i++) line += strfmt(i % 4 == 0 ? " %02x" : "%02x", b[i]);
+            LOGI("%s", line.c_str());
+        }
+    }
     c.set_ret32(res);
 }
 
