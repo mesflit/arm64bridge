@@ -19,10 +19,10 @@ import android.widget.TextView;
 import java.io.BufferedReader;
 import java.io.FileReader;
 import java.io.IOException;
-import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.nio.channels.FileChannel;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
@@ -33,9 +33,9 @@ import java.util.Map;
 /**
  * In-game value editor: finds a number in the game's memory and changes or freezes it.
  *
- * It runs inside the game's own process and reads and writes that process's memory through
- * /proc/self/mem, so it needs neither root nor a debugger, and works the same for games that run on
- * the bridge (their memory is part of this process) and for native 64-bit games. Usual workflow:
+ * It runs inside the game's own process and reads and writes that process's own memory (see [Memory]),
+ * so it needs neither root nor a debugger, and works for games that run on the bridge (their memory is
+ * part of this process) and for native 64-bit games. Usual workflow:
  * search the value shown in the game, change it in the game, refine with the new value, repeat until
  * a few results are left, then edit or freeze them. Only framework classes are used.
  */
@@ -92,15 +92,131 @@ final class ValueEditor {
         return out;
     }
 
-    private static RandomAccessFile open(boolean write) throws IOException {
-        return new RandomAccessFile("/proc/self/mem", write ? "rw" : "r");
+    /** How the memory of this process is read and written. */
+    interface Memory {
+        /** Copies [len] bytes at [addr] into [dst]; false if that memory cannot be read. */
+        boolean read(long addr, byte[] dst, int len);
+
+        boolean write(long addr, byte[] src, int len);
     }
 
-    private static Number read(FileChannel ch, ByteBuffer b, long addr, Type t) throws IOException {
-        b.clear();
-        b.limit(t.size);
-        if (ch.read(b, addr) != t.size) return null;
-        return decode(b, 0, t);
+    /**
+     * Through the bridge runtime, which uses process_vm_readv/process_vm_writev on this process: bad
+     * addresses give an error instead of a crash. Falls back to [RawMemory] if the system refuses.
+     */
+    static final class BridgeMemory implements Memory {
+        private Memory fallback;
+
+        private boolean refused(int result) {
+            if (result != -1 && result != -38) return false;  // EPERM, ENOSYS
+            try {
+                fallback = new RawMemory();
+            } catch (Throwable ignored) {
+                // stays on the bridge calls
+            }
+            return fallback != null;
+        }
+
+        @Override
+        public boolean read(long addr, byte[] dst, int len) {
+            if (fallback != null) return fallback.read(addr, dst, len);
+            int r = GameOverlay.nativeMemRead(addr, dst, len);
+            return refused(r) ? fallback.read(addr, dst, len) : r == len;
+        }
+
+        @Override
+        public boolean write(long addr, byte[] src, int len) {
+            if (fallback != null) return fallback.write(addr, src, len);
+            int r = GameOverlay.nativeMemWrite(addr, src, len);
+            return refused(r) ? fallback.write(addr, src, len) : r == len;
+        }
+    }
+
+    /**
+     * Without the bridge (native 64-bit apps): the Java runtime's raw memory copy. A raw copy crashes on
+     * unmapped memory, so every access first asks the kernel whether the pages are mapped.
+     * (/proc/self/mem would be simpler, but Android only lets debuggable apps open it.)
+     */
+    static final class RawMemory implements Memory {
+        private final Object unsafe;
+        private final Method copy;
+        private final ByteBuffer scratch = ByteBuffer.allocateDirect(CHUNK);
+        private final long scratchAddr;
+        private final long page;
+
+        RawMemory() throws Exception {
+            Class<?> u = Class.forName("sun.misc.Unsafe");
+            Field f = u.getDeclaredField("theUnsafe");
+            f.setAccessible(true);
+            unsafe = f.get(null);
+            copy = u.getMethod("copyMemory", long.class, long.class, long.class);
+            Field address = java.nio.Buffer.class.getDeclaredField("address");
+            address.setAccessible(true);
+            scratchAddr = address.getLong(scratch);
+            long p = 4096;
+            try {
+                p = android.system.Os.sysconf(android.system.OsConstants._SC_PAGESIZE);
+            } catch (Throwable ignored) {
+                // default
+            }
+            page = p > 0 ? p : 4096;
+        }
+
+        private boolean mapped(long addr, int len) {
+            long start = addr & -page, end = (addr + len + page - 1) & -page;
+            try {
+                android.system.Os.mincore(start, end - start, new byte[(int) ((end - start) / page)]);
+                return true;
+            } catch (android.system.ErrnoException e) {
+                return e.errno != android.system.OsConstants.ENOMEM;
+            } catch (Throwable t) {
+                return true;  // no such call here: rely on the list of mapped regions
+            }
+        }
+
+        @Override
+        public synchronized boolean read(long addr, byte[] dst, int len) {
+            if (len > CHUNK || !mapped(addr, len)) return false;
+            try {
+                copy.invoke(unsafe, addr, scratchAddr, (long) len);
+                scratch.position(0);
+                scratch.get(dst, 0, len);
+                return true;
+            } catch (Throwable t) {
+                return false;
+            }
+        }
+
+        @Override
+        public synchronized boolean write(long addr, byte[] src, int len) {
+            if (len > CHUNK || !mapped(addr, len)) return false;
+            try {
+                scratch.position(0);
+                scratch.put(src, 0, len);
+                copy.invoke(unsafe, scratchAddr, addr, (long) len);
+                return true;
+            } catch (Throwable t) {
+                return false;
+            }
+        }
+    }
+
+    private Memory memory;
+
+    /** [bridged]: the app runs on the bridge runtime, whose memory calls are preferred. */
+    synchronized void init(boolean bridged) {
+        if (memory != null) return;
+        try {
+            memory = bridged ? new BridgeMemory() : new RawMemory();
+        } catch (Throwable t) {
+            memory = null;
+        }
+    }
+
+    private Memory memory() throws IOException {
+        Memory m = memory;
+        if (m == null) throw new IOException("this device does not allow reading the app's memory");
+        return m;
     }
 
     private static Number decode(ByteBuffer b, int at, Type t) {
@@ -114,16 +230,7 @@ final class ValueEditor {
         }
     }
 
-    private static boolean equal(Number found, double want, Type t) {
-        if (found == null) return false;
-        if (t == Type.FLOAT || t == Type.DOUBLE) {
-            double v = found.doubleValue();
-            return Math.abs(v - want) <= Math.max(0.001, Math.abs(want) * 1e-6);
-        }
-        return found.longValue() == (long) want;
-    }
-
-    private static void write(FileChannel ch, long addr, Type t, double value) throws IOException {
+    private static byte[] encode(Type t, double value) {
         ByteBuffer b = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN);
         switch (t) {
             case DWORD: b.putInt((int) (long) value); break;
@@ -133,39 +240,49 @@ final class ValueEditor {
             case WORD: b.putShort((short) (long) value); break;
             default: b.put((byte) (long) value); break;
         }
-        b.flip();
-        ch.write(b, addr);
+        return b.array();
+    }
+
+    private static boolean equal(Number found, double want, Type t) {
+        if (found == null) return false;
+        if (t == Type.FLOAT || t == Type.DOUBLE) {
+            double v = found.doubleValue();
+            return Math.abs(v - want) <= Math.max(0.001, Math.abs(want) * 1e-6);
+        }
+        return found.longValue() == (long) want;
+    }
+
+    /** The value at [addr], or null if that memory is gone. */
+    private Number readValue(Memory m, long addr, Type t) {
+        byte[] b = new byte[8];
+        if (!m.read(addr, b, t.size)) return null;
+        return decode(ByteBuffer.wrap(b).order(ByteOrder.LITTLE_ENDIAN), 0, t);
     }
 
     /** First search: every aligned location of the whole writable memory that holds [want]. */
     private String search(double want) throws IOException {
+        Memory m = memory();
         long[] out = new long[1024];
         int n = 0;
-        long total = 0;
-        ByteBuffer buf = ByteBuffer.allocateDirect(CHUNK + 8).order(ByteOrder.LITTLE_ENDIAN);
-        try (RandomAccessFile f = open(false); FileChannel ch = f.getChannel()) {
-            for (long[] reg : regions()) {
-                for (long pos = reg[0]; pos < reg[1]; pos += CHUNK) {
-                    int len = (int) Math.min(CHUNK, reg[1] - pos);
-                    buf.clear();
-                    buf.limit(len);
-                    int got;
-                    try {
-                        got = ch.read(buf, pos);
-                    } catch (IOException e) {
-                        continue;  // pages that cannot be read
-                    }
-                    for (int i = 0; i + type.size <= got; i += type.align) {
-                        if (!equal(decode(buf, i, type), want, type)) continue;
-                        total++;
-                        if (n < MAX_RESULTS) {
-                            if (n == out.length) out = Arrays.copyOf(out, Math.min(MAX_RESULTS, out.length * 2));
-                            out[n++] = pos + i;
-                        }
+        long total = 0, scanned = 0;
+        byte[] chunk = new byte[CHUNK];
+        ByteBuffer buf = ByteBuffer.wrap(chunk).order(ByteOrder.LITTLE_ENDIAN);
+        for (long[] reg : regions()) {
+            for (long pos = reg[0]; pos < reg[1]; pos += CHUNK) {
+                int len = (int) Math.min(CHUNK, reg[1] - pos);
+                if (!m.read(pos, chunk, len)) continue;  // pages that cannot be read
+                scanned += len;
+                for (int i = 0; i + type.size <= len; i += type.align) {
+                    if (!equal(decode(buf, i, type), want, type)) continue;
+                    total++;
+                    if (n < MAX_RESULTS) {
+                        if (n == out.length) out = Arrays.copyOf(out, Math.min(MAX_RESULTS, out.length * 2));
+                        out[n++] = pos + i;
                     }
                 }
             }
         }
+        if (scanned == 0) throw new IOException("this device does not allow reading the app's memory");
         results = out;
         count = n;
         found = total;
@@ -174,18 +291,10 @@ final class ValueEditor {
 
     /** Keeps the results that now hold [want]. */
     private String refine(double want) throws IOException {
+        Memory m = memory();
         int n = 0;
-        ByteBuffer b = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN);
-        try (RandomAccessFile f = open(false); FileChannel ch = f.getChannel()) {
-            for (int i = 0; i < count; i++) {
-                Number v;
-                try {
-                    v = read(ch, b, results[i], type);
-                } catch (IOException e) {
-                    continue;
-                }
-                if (equal(v, want, type)) results[n++] = results[i];
-            }
+        for (int i = 0; i < count; i++) {
+            if (equal(readValue(m, results[i], type), want, type)) results[n++] = results[i];
         }
         count = n;
         found = n;
@@ -198,9 +307,7 @@ final class ValueEditor {
     }
 
     private void set(long addr, Type t, double value) throws IOException {
-        try (RandomAccessFile f = open(true); FileChannel ch = f.getChannel()) {
-            write(ch, addr, t, value);
-        }
+        if (!memory().write(addr, encode(t, value), t.size)) throw new IOException("cannot write there");
     }
 
     private synchronized void freeze(long addr, Type t, double value, boolean on) {
@@ -208,7 +315,8 @@ final class ValueEditor {
         else frozen.remove(addr);
         if (!frozen.isEmpty() && freezer == null) {
             freezer = new Thread(() -> {
-                try (RandomAccessFile f = open(true); FileChannel ch = f.getChannel()) {
+                try {
+                    Memory m = memory();
                     while (true) {
                         Map<Long, Object[]> copy;
                         synchronized (ValueEditor.this) {
@@ -219,11 +327,8 @@ final class ValueEditor {
                             copy = new LinkedHashMap<>(frozen);
                         }
                         for (Map.Entry<Long, Object[]> e : copy.entrySet()) {
-                            try {
-                                write(ch, e.getKey(), (Type) e.getValue()[0], (Double) e.getValue()[1]);
-                            } catch (IOException ignored) {
-                                // The memory went away.
-                            }
+                            Type ft = (Type) e.getValue()[0];
+                            m.write(e.getKey(), encode(ft, (Double) e.getValue()[1]), ft.size);
                         }
                         Thread.sleep(100);
                     }
@@ -307,16 +412,11 @@ final class ValueEditor {
                     }
                     return;
                 }
-                ByteBuffer b = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN);
-                try (RandomAccessFile f = open(false); FileChannel ch = f.getChannel()) {
+                try {
+                    Memory m = memory();
                     for (int i = 0; i < count && i < SHOWN; i++) {
                         final long addr = results[i];
-                        Number v = null;
-                        try {
-                            v = read(ch, b, addr, type);
-                        } catch (IOException ignored) {
-                            // gone
-                        }
+                        Number v = readValue(m, addr, type);
                         boolean isFrozen;
                         synchronized (ValueEditor.this) {
                             isFrozen = frozen.containsKey(addr);

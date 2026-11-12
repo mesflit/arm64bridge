@@ -46,5 +46,7 @@ std::string jni_shorty_from_signature(const char* sig);
 void jni_set_app_class_loader(JNIEnv* env, jobject loader);
 // Java -> guest native calls per method since the previous call of this function.
 std::string jni_call_stats();
+// Calls of the per-frame native method of games that present frames from Java (0 if there is none).
+u64 jni_frame_method_calls();
 
 }  // namespace a64b

@@ -993,6 +993,26 @@ std::string jni_call_stats() {
     return out.empty() ? "none" : out;
 }
 
+// Games that present their frames from Java (GLSurfaceView) never call eglSwapBuffers in native code.
+// Their frame rate is taken from the native method the renderer calls once per frame: the busiest
+// method whose name says so.
+u64 jni_frame_method_calls() {
+    static const char* const words[] = {"update", "render", "draw", "step", "frame", "tick"};
+    u64 best = 0;
+    u32 n = g_method_count.load();
+    for (u32 i = 0; i < n; i++) {
+        NativeMethod* m = g_methods[i];
+        if (!m) continue;
+        std::string name = m->name;
+        for (char& ch : name) ch = (char)tolower((unsigned char)ch);
+        bool match = false;
+        for (const char* w : words) match = match || name.find(w) != std::string::npos;
+        if (!match) continue;
+        best = std::max<u64>(best, m->calls.load(std::memory_order_relaxed));
+    }
+    return best;
+}
+
 jint jni_call_onload(JNIEnv* env, Module* m) {
     u32 fn = m->find("JNI_OnLoad");
     if (!fn) return JNI_VERSION_1_6;

@@ -5,6 +5,7 @@
 #include <jni.h>
 #include <limits.h>
 #include <time.h>
+#include <sys/uio.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -193,6 +194,7 @@ void open_log_file(JNIEnv* env) {
             for (;;) {
                 std::this_thread::sleep_for(std::chrono::seconds(5));
                 u64 f = g_frames.load(), k = cpu_total_host_calls();
+                if (f == 0) f = jni_frame_method_calls();  // frames presented from Java
                 // How busy the render thread and the whole process are: a render thread at ~100%
                 // means the frame rate is limited by how fast guest code is emulated.
                 int tid = g_render_tid.load();
@@ -280,11 +282,32 @@ void JNICALL overlay_set_limiter(JNIEnv*, jclass, jint mode) {
 
 jstring JNICALL overlay_version(JNIEnv* env, jclass) { return env->NewStringUTF(A64B_VERSION); }
 
+// Value editor: memory of this process, read and written with process_vm_readv/writev so that a bad
+// address is an error and not a crash. (Opening /proc/self/mem is only allowed in debuggable apps.)
+jint overlay_mem(JNIEnv* env, jlong address, jbyteArray array, jint length, bool write) {
+    if (!array || length <= 0 || length > env->GetArrayLength(array)) return -EINVAL;
+    jbyte* bytes = env->GetByteArrayElements(array, nullptr);
+    if (!bytes) return -ENOMEM;
+    iovec local = {bytes, (size_t)length};
+    iovec remote = {(void*)(uintptr_t)address, (size_t)length};
+    ssize_t n = write ? process_vm_writev(getpid(), &local, 1, &remote, 1, 0) : process_vm_readv(getpid(), &local, 1, &remote, 1, 0);
+    int result = n < 0 ? -errno : (int)n;
+    env->ReleaseByteArrayElements(array, bytes, write ? JNI_ABORT : 0);
+    return result;
+}
+jint JNICALL overlay_mem_read(JNIEnv* env, jclass, jlong address, jbyteArray dst, jint length) {
+    return overlay_mem(env, address, dst, length, false);
+}
+jint JNICALL overlay_mem_write(JNIEnv* env, jclass, jlong address, jbyteArray src, jint length) {
+    return overlay_mem(env, address, src, length, true);
+}
+
 jfloat JNICALL overlay_fps(JNIEnv*, jclass) {
     static u64 last_frames = 0;
     static auto last_time = std::chrono::steady_clock::now();
     auto now = std::chrono::steady_clock::now();
     u64 frames = g_frames.load();
+    if (frames == 0) frames = jni_frame_method_calls();  // frames presented from Java
     double dt = std::chrono::duration<double>(now - last_time).count();
     float fps = (frames == 0 || dt <= 0) ? -1.0f : (float)((frames - last_frames) / dt);
     last_frames = frames;
@@ -339,14 +362,16 @@ void load_overlay(JNIEnv* env) {
         overlay = (jclass)env->NewGlobalRef(overlay);
         const JNINativeMethod natives[] = {{const_cast<char*>("nativeSetLimiter"), const_cast<char*>("(I)V"), (void*)overlay_set_limiter},
                                            {const_cast<char*>("nativeFps"), const_cast<char*>("()F"), (void*)overlay_fps},
-                                           {const_cast<char*>("nativeVersion"), const_cast<char*>("()Ljava/lang/String;"), (void*)overlay_version}};
+                                           {const_cast<char*>("nativeVersion"), const_cast<char*>("()Ljava/lang/String;"), (void*)overlay_version},
+                                           {const_cast<char*>("nativeMemRead"), const_cast<char*>("(J[BI)I"), (void*)overlay_mem_read},
+                                           {const_cast<char*>("nativeMemWrite"), const_cast<char*>("(J[BI)I"), (void*)overlay_mem_write}};
         // The FPS booster controls are an option of the patcher (marker file in the APK).
         std::vector<u8> marker;
         bool booster = zip_extract(g_apk_path, "assets/arm64bridge/fps-booster", marker);
         if (!booster) g_frame_limiter.store(0);
         bool editor = zip_extract(g_apk_path, "assets/arm64bridge/value-editor", marker);
         jmethodID install = env->GetStaticMethodID(overlay, "install", "(Landroid/app/Application;ZZ)V");
-        if (env->RegisterNatives(overlay, natives, 3) != JNI_OK || clear_exc(env) || !install) {
+        if (env->RegisterNatives(overlay, natives, 5) != JNI_OK || clear_exc(env) || !install) {
             clear_exc(env);
             LOGW("in-game menu: could not bind the menu");
             return;

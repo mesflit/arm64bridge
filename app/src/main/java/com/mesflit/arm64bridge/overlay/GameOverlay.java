@@ -41,6 +41,9 @@ public final class GameOverlay implements Application.ActivityLifecycleCallbacks
     private static native float nativeFps();
     /** Version of the ARM64Bridge runtime in this app. */
     private static native String nativeVersion();
+    /** Copy memory of this process from/to a byte array; the result is the byte count or a negative errno. */
+    static native int nativeMemRead(long address, byte[] dst, int length);
+    static native int nativeMemWrite(long address, byte[] src, int length);
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private int limiter;
@@ -129,6 +132,7 @@ public final class GameOverlay implements Application.ActivityLifecycleCallbacks
         final TextView editorButton = label(activity, "Value editor…", dp);
         editorButton.setOnClickListener(v -> {
             try {
+                ValueEditor.get().init(bridged);
                 ValueEditor.get().show(activity);
             } catch (RuntimeException ignored) {
                 // Never let the menu break the game.
