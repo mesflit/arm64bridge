@@ -585,3 +585,26 @@ JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_foreignImports(JNI
     if (((int (*)(void))found)() != 0) return 8;
     return 0;
 }
+
+/* The handle of an app library (this one) read the old way: its own exports are in the table. */
+JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_soinfoModule(JNIEnv* env, jclass cls) {
+    struct sym { unsigned name, value, size; unsigned char info, other; unsigned short shndx; };
+    char* si = dlopen("libguestdemo.so", 0);
+    if (!si) return 1;
+    unsigned base = *(unsigned*)(si + 0x8c);
+    const char* strtab = *(const char**)(si + 0xac);
+    struct sym* symtab = *(struct sym**)(si + 0xb0);
+    unsigned nbucket = *(unsigned*)(si + 0xb4);
+    unsigned* bucket = *(unsigned**)(si + 0xbc);
+    unsigned* chain = *(unsigned**)(si + 0xc0);
+    const char* name = "Java_com_mesflit_arm64bridge_GuestDemo_add";
+    for (unsigned n = bucket[old_elf_hash(name) % nbucket]; n; n = chain[n]) {
+        const char* a = strtab + symtab[n].name;
+        const char* b = name;
+        while (*a && *a == *b) { a++; b++; }
+        if (*a || *b) continue;
+        void* found = (void*)(symtab[n].value + base);
+        return found == dlsym(si, name) && found == (void*)Java_com_mesflit_arm64bridge_GuestDemo_add ? 0 : 4;
+    }
+    return 2;
+}

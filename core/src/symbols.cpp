@@ -87,6 +87,7 @@ void thunks_init() {
         register_math_thunks();
         register_pthread_thunks();
         register_misc_thunks();
+        register_dl_thunks();
         register_android_thunks();
         register_gles_thunks();
         register_data_symbols();

@@ -195,6 +195,7 @@ void register_stdio_thunks();
 void register_math_thunks();
 void register_pthread_thunks();
 void register_misc_thunks();
+void register_dl_thunks();
 void register_android_thunks();
 void register_gles_thunks();
 void register_data_symbols();

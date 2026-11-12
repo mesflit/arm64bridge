@@ -35,6 +35,7 @@ public final class GuestDemo {
     public static native int compat(String scratchFile);
     public static native int soinfo();
     public static native int foreignImports();
+    public static native int soinfoModule();
     // Registered from JNI_OnLoad with RegisterNatives:
     public native String registered(int x, String s);
     public static native boolean sameEnv();
@@ -83,6 +84,8 @@ public final class GuestDemo {
         check(sb, failed, "old-style dlopen handle (" + soinfo + ")", soinfo == 0);
         int foreign = foreignImports();
         check(sb, failed, "imports of a library linked by the app (" + foreign + ")", foreign == 0);
+        int soinfoModule = soinfoModule();
+        check(sb, failed, "old-style handle of an app library (" + soinfoModule + ")", soinfoModule == 0);
         // Game loop frame sleep: 10 ms into a 30 ms frame it must sleep about 20 ms (booster off).
         long sleepStart = System.nanoTime();
         int slept = frameSleep(10);
