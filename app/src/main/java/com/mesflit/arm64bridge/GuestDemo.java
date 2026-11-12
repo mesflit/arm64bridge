@@ -53,6 +53,25 @@ public final class GuestDemo {
     public static void boom() { throw new SecurityException("test: ignored by guest code"); }
     public int bump(int by) { counter += by; return counter; }
 
+    /** Reads /proc/cpuinfo the way the Java player of Unity 3 does: it needs an ARMv6+ CPU with "vfp". */
+    static String javaCpuinfo() {
+        String arch = null, features = null;
+        try (java.io.LineNumberReader r = new java.io.LineNumberReader(new java.io.FileReader("/proc/cpuinfo"), 8192)) {
+            for (String line; (line = r.readLine()) != null; ) {
+                int colon = line.indexOf(':');
+                if (colon < 0) continue;
+                String key = line.substring(0, colon).trim(), value = line.substring(colon + 1).trim();
+                if (key.equals("CPU architecture") && arch == null) arch = value;
+                if (key.equals("Features") && features == null) features = value;
+            }
+        } catch (java.io.IOException e) {
+            return e.toString();
+        }
+        if (arch == null || !arch.startsWith("7")) return "architecture " + arch;
+        if (features == null || !features.contains("vfp") || !features.contains("neon")) return "features " + features;
+        return "ok";
+    }
+
     /** Runs every check and returns a human readable report. The first line is "PASS" or "FAIL". */
     public static String runAll() {
         StringBuilder sb = new StringBuilder();
@@ -101,6 +120,8 @@ public final class GuestDemo {
         check(sb, failed, "code generated at run time, flushed by range (" + jit + ")", jit == 0);
         int cpu = cpuinfo();
         check(sb, failed, "/proc/cpuinfo of a 32-bit ARM CPU (" + cpu + ")", cpu == 0);
+        String javaCpu = javaCpuinfo();
+        check(sb, failed, "/proc/cpuinfo read from Java (" + javaCpu + ")", javaCpu.equals("ok"));
         int ign = ignoredException();
         check(sb, failed, "JNI call after an ignored Java exception (" + ign + ")", ign == 0);
         String refl;

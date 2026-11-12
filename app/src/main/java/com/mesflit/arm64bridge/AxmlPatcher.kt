@@ -23,6 +23,7 @@ object AxmlPatcher {
 
     /** Provider class that starts the in-game menu in apps that run without the bridge. */
     const val OVERLAY_INSTALLER = "com.mesflit.arm64bridge.overlay.OverlayInstaller"
+    const val BRIDGE_STARTER = "com.mesflit.arm64bridge.overlay.BridgeStarter"
 
     private val COMPONENTS = setOf("activity", "activity-alias", "service", "receiver", "provider")
     private val PERMISSION_ELEMENTS = setOf("uses-permission", "uses-permission-sdk-23", "uses-permission-sdk-m")
@@ -52,10 +53,12 @@ object AxmlPatcher {
         val dataInstaller: Boolean = false,
         /** Declare [OVERLAY_INSTALLER]; the patcher sets this for the value editor in apps without the bridge. */
         val overlayInstaller: Boolean = false,
+        /** Declare [BRIDGE_STARTER]; the patcher sets this for apps that run on the bridge. */
+        val bridgeStarter: Boolean = false,
     ) {
         val isEmpty get() = raiseTargetSdkTo == null && !disableAnyDensity && label == null && packageName == null &&
             removePermissions.isEmpty() && addPermissions.isEmpty() && screenOrientation == null && !debuggable &&
-            !extractNativeLibs && !dataInstaller && !overlayInstaller
+            !extractNativeLibs && !dataInstaller && !overlayInstaller && !bridgeStarter
     }
 
     private fun intValue(a: Axml.Attr?): Int? =
@@ -168,6 +171,7 @@ object AxmlPatcher {
         val helpers = listOfNotNull(
             if (edits.dataInstaller) DATA_INSTALLER to "data" else null,
             if (edits.overlayInstaller) OVERLAY_INSTALLER to "menu" else null,
+            if (edits.bridgeStarter) BRIDGE_STARTER to "start" else null,
         )
         for ((className, suffix) in helpers) {
             requireNotNull(app) { "the manifest has no <application>" }

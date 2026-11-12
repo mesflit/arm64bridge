@@ -403,6 +403,7 @@ A64B_EXPORT jint a64b_shim_load(JavaVM* vm, const char* shim_path) {
     if (vm->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK || !env) return JNI_ERR;
     open_log_file(env);
     crash_handler_install();
+    java_proc_hook_install();
     std::string path = shim_path ? shim_path : "";
     LOGI("System.loadLibrary -> shim %s", path.c_str());
     std::string name = path.substr(path.rfind('/') == std::string::npos ? 0 : path.rfind('/') + 1);
@@ -454,8 +455,15 @@ A64B_EXPORT jstring Java_com_mesflit_arm64bridge_NativeBridge_inspectElf(JNIEnv*
     return env->NewStringUTF(out.c_str());
 }
 
+// Called by the BridgeStarter provider of a patched app, before the app's own code runs.
+A64B_EXPORT void Java_com_mesflit_arm64bridge_overlay_BridgeStarter_nativeStart(JNIEnv*, jclass) {
+    init_from_environment();
+    java_proc_hook_install();
+}
+
 A64B_EXPORT void Java_com_mesflit_arm64bridge_NativeBridge_addGuestDirectory(JNIEnv* env, jclass, jstring dir) {
     init_from_environment();
+    java_proc_hook_install();  // for the self test
     add_guest_dir(jstr(env, dir));
 }
 

@@ -150,6 +150,8 @@ Runtime files in `core/src`:
 | `elf_loader.*` | Loader for 32-bit ARM libraries |
 | `dl_thunks.cpp` | dlopen/dlsym compatible with Android 2.x (old-style soinfo handles) |
 | `guest_signals.cpp` | Signals between guest threads (handlers, pthread_kill, sigsuspend), as used by garbage collectors |
+| `guest_proc.cpp` | `/proc/cpuinfo` as a 32-bit ARM process sees it (guest code) |
+| `java_proc_hook.cpp` | The same view for the app's Java code (Unity 3 checks the CPU from Java); started early by the `BridgeStarter` provider |
 | `old_bionic_thunks.cpp` | What the C library of Android before 5.0 exported and later removed (`__page_size`, `__atomic_*`, SHA1, ...) |
 | `jni_bridge.*`, `trampoline.S` | JNI between the 64-bit VM and 32-bit code |
 | `libc_thunks.cpp`, `stdio_thunks.cpp`, `math_thunks.cpp`, `pthread_thunks.cpp`, `posix_extra_thunks.cpp`, `misc_thunks.cpp` | C library for guest code |

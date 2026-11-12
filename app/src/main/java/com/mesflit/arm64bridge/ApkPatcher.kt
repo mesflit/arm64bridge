@@ -122,8 +122,9 @@ class ApkPatcher(private val context: Context) {
         val embed = options.extras.isNotEmpty()
         // Without the bridge runtime the menu is started by a provider of ours inside the app.
         val standaloneMenu = options.valueEditor && !bridge
-        val addDex = embed || standaloneMenu
-        val edits = options.manifest.copy(dataInstaller = embed, overlayInstaller = standaloneMenu)
+        // Apps on the bridge start the runtime from a provider of ours (BridgeStarter).
+        val addDex = embed || standaloneMenu || bridge
+        val edits = options.manifest.copy(dataInstaller = embed, overlayInstaller = standaloneMenu, bridgeStarter = bridge)
         val oldPkg = analysis.manifest?.packageName ?: ""
         val newPkg = edits.packageName ?: oldPkg
 

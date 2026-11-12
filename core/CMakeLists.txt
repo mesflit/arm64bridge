@@ -66,7 +66,8 @@ add_library(arm64bridge SHARED
   src/dl_thunks.cpp
   src/old_bionic_thunks.cpp
   src/guest_signals.cpp
-  src/guest_proc.cpp)
+  src/guest_proc.cpp
+  src/java_proc_hook.cpp)
 target_include_directories(arm64bridge PRIVATE src)
 set(A64B_VERSION "dev" CACHE STRING "Version string reported by the runtime")
 target_compile_definitions(arm64bridge PRIVATE A64B_VERSION="${A64B_VERSION}")

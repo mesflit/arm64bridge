@@ -212,6 +212,8 @@ void register_posix_extra_thunks();
 // A /proc file shown differently to guest code (guest_proc.cpp): an open, read-only descriptor,
 // -1 with errno on failure, or -2 when the path is an ordinary file.
 int guest_proc_open(const char* path);
+// Lets Java code see those /proc files too (java_proc_hook.cpp).
+void java_proc_hook_install();
 // Host-owned strings handed to the guest (cached copies in guest memory).
 u32 guest_intern_string(const char* s);
 void thunks_init();
