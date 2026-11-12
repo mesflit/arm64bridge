@@ -754,3 +754,24 @@ JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_jitCode(JNIEnv* en
     munmap(code, 4096);
     return 0;
 }
+
+/* Method IDs from FromReflectedMethod, as Unity's AndroidJavaObject gets them: a static method and a constructor. */
+JNIEXPORT jstring JNICALL Java_com_mesflit_arm64bridge_GuestDemo_reflected(JNIEnv* env, jclass cls, jobject method, jobject ctor) {
+    jmethodID describe = (*env)->FromReflectedMethod(env, method);
+    jmethodID init = (*env)->FromReflectedMethod(env, ctor);
+    if (!describe || !init) return NULL;
+    jvalue args[4];
+    args[0].j = 7;
+    args[1].d = 0.5;
+    args[2].l = (*env)->NewStringUTF(env, "x");
+    args[3].f = 2.0f;
+    jstring s = (jstring)(*env)->CallStaticObjectMethodA(env, cls, describe, args);
+    jclass sbc = (*env)->FindClass(env, "java/lang/StringBuilder");
+    jvalue a1[1];
+    a1[0].l = s;
+    jobject sb = (*env)->NewObjectA(env, sbc, init, a1);
+    jmethodID append = (*env)->GetMethodID(env, sbc, "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;");
+    jmethodID to_string = (*env)->GetMethodID(env, sbc, "toString", "()Ljava/lang/String;");
+    (*env)->CallObjectMethod(env, sb, append, (*env)->NewStringUTF(env, " sb"));
+    return (jstring)(*env)->CallObjectMethod(env, sb, to_string);
+}

@@ -39,6 +39,7 @@ public final class GuestDemo {
     public static native int oldBionic();
     public static native int stopTheWorld();
     public static native int jitCode();
+    public static native String reflected(java.lang.reflect.Method m, java.lang.reflect.Constructor<?> ctor);
     // Registered from JNI_OnLoad with RegisterNatives:
     public native String registered(int x, String s);
     public static native boolean sameEnv();
@@ -95,6 +96,14 @@ public final class GuestDemo {
         check(sb, failed, "signals: stop and resume threads like a GC (" + stw + ")", stw == 0);
         int jit = jitCode();
         check(sb, failed, "code generated at run time, flushed by range (" + jit + ")", jit == 0);
+        String refl;
+        try {
+            refl = reflected(GuestDemo.class.getMethod("describe", long.class, double.class, String.class, float.class),
+                    StringBuilder.class.getConstructor(String.class));
+        } catch (NoSuchMethodException e) {
+            refl = e.toString();
+        }
+        check(sb, failed, "methods from FromReflectedMethod (" + refl + ")", "7|0.5|x|2.0 sb".equals(refl));
         // Game loop frame sleep: 10 ms into a 30 ms frame it must sleep about 20 ms (booster off).
         long sleepStart = System.nanoTime();
         int slept = frameSleep(10);

@@ -296,6 +296,52 @@ struct JniCall<R (*Iface::*)(JNIEnv*, A...)> {
     }
 };
 
+// The shorty of a java.lang.reflect.Method or Constructor, so that a method ID from
+// FromReflectedMethod can be called like one from GetMethodID (Unity's AndroidJavaObject does this).
+std::string reflected_shorty(JNIEnv* env, jobject member) {
+    auto type_char = [env](jclass type) -> char {
+        jclass cc = env->GetObjectClass(type);
+        jmethodID get_name = env->GetMethodID(cc, "getName", "()Ljava/lang/String;");
+        env->DeleteLocalRef(cc);
+        jstring js = (jstring)env->CallObjectMethod(type, get_name);
+        const char* chars = env->GetStringUTFChars(js, nullptr);
+        std::string n = chars;
+        env->ReleaseStringUTFChars(js, chars);
+        env->DeleteLocalRef(js);
+        static const std::pair<const char*, char> prims[] = {{"int", 'I'}, {"boolean", 'Z'}, {"byte", 'B'}, {"char", 'C'}, {"short", 'S'},
+                                                              {"long", 'J'}, {"float", 'F'}, {"double", 'D'}, {"void", 'V'}};
+        for (auto& p : prims)
+            if (n == p.first) return p.second;
+        return 'L';
+    };
+    if (!member) return "";
+    jclass mc = env->GetObjectClass(member);
+    jmethodID get_params = env->GetMethodID(mc, "getParameterTypes", "()[Ljava/lang/Class;");
+    jmethodID get_ret = env->GetMethodID(mc, "getReturnType", "()Ljava/lang/Class;");
+    if (env->ExceptionCheck()) env->ExceptionClear();  // a Constructor has no getReturnType
+    env->DeleteLocalRef(mc);
+    if (!get_params) return "";
+    std::string shorty = "V";
+    if (get_ret) {
+        jclass rt = (jclass)env->CallObjectMethod(member, get_ret);
+        shorty[0] = type_char(rt);
+        env->DeleteLocalRef(rt);
+    }
+    jobjectArray params = (jobjectArray)env->CallObjectMethod(member, get_params);
+    jsize np = params ? env->GetArrayLength(params) : 0;
+    for (jsize i = 0; i < np; i++) {
+        jclass pt = (jclass)env->GetObjectArrayElement(params, i);
+        shorty += type_char(pt);
+        env->DeleteLocalRef(pt);
+    }
+    if (params) env->DeleteLocalRef(params);
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        return "";
+    }
+    return shorty;
+}
+
 void set_slot(size_t index, const char* name, TrapFn fn, void* ud) {
     if (index >= kIfaceSlots) fatal("JNI slot out of range");
     g2h<u32>(g_guest_iface)[index] = trap_create(name, fn, ud);
@@ -568,8 +614,10 @@ void build_tables() {
         c.set_ret32(id_token(env->GetStaticMethodID(cls, name, sig), jni_shorty_from_signature(sig)));
     });
     HAND(FromReflectedMethod, {
-        LOGW("FromReflectedMethod: the resulting method ID cannot be called from guest code yet");
-        c.set_ret32(id_token(env->FromReflectedMethod(OBJ()), ""));
+        jobject member = OBJ();
+        std::string shorty = reflected_shorty(env, member);
+        if (shorty.empty()) LOGW("FromReflectedMethod: could not read the method's parameter types");
+        c.set_ret32(id_token(env->FromReflectedMethod(member), shorty));
     });
 
     // -- references --
