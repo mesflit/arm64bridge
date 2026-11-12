@@ -446,6 +446,11 @@ JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_mmapFixed(JNIEnv* 
     if (q != r + 4 * 4096) failed |= 2;
     else if (q[4096] != 0) failed |= 4; /* a fixed mapping replaces the old pages */
     else { q[0] = 7; if (r[4 * 4096] != 7) failed |= 8; }
+    /* MAP_FIXED that runs past the end of an earlier mapping into free memory (a loader extending
+       the last segment of a library). */
+    char* tail = mmap(r + 14 * 4096, 6 * 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    if (tail != r + 14 * 4096) failed |= 128;
+    else { tail[5 * 4096] = 9; if (tail[5 * 4096] != 9) failed |= 256; munmap(tail, 6 * 4096); }
     munmap(r, 16 * 4096);
     /* A hint for free memory is honoured: the range just released. */
     char* h = mmap(r, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);

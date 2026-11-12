@@ -247,6 +247,26 @@ u32 page_map_at(u32 addr, u32 size, int host_prot, int host_flags, int fd, i64 o
     const int anon = fd < 0 ? MAP_ANONYMOUS : 0;
     std::lock_guard<std::mutex> lk(g_page_mu);
     if (in_arena(addr, size)) {
+        if (fixed && !covered_by_used(addr, size)) {
+            // MAP_FIXED over a range that is partly free (a loader extending a segment past its own
+            // reservation): like Linux, map over all of it; the free parts become allocated.
+            u64 end = (u64)addr + size;
+            for (auto it = g_free_regions.begin(); it != g_free_regions.end();) {
+                u64 fs = it->first, fe = fs + it->second;
+                if (fe <= addr || fs >= end) {
+                    ++it;
+                    continue;
+                }
+                u64 cs = std::max<u64>(fs, addr), ce = std::min<u64>(fe, end);
+                it = g_free_regions.erase(it);
+                if (fs < cs) g_free_regions[(u32)fs] = (u32)(cs - fs);
+                if (ce < fe) g_free_regions[(u32)ce] = (u32)(fe - ce);
+                g_used_regions[(u32)cs] = Region{(u32)(ce - cs), exec};
+            }
+            if (mmap(g2h(addr), size, prot, type | anon | MAP_FIXED, fd, offset) == MAP_FAILED) return 0;
+            if (exec) mem_bump_code_epoch();
+            return addr;
+        }
         if (covered_by_used(addr, size)) {
             if (!fixed) return 0;  // a hint for memory that is in use
             if (mmap(g2h(addr), size, prot, type | anon | MAP_FIXED, fd, offset) == MAP_FAILED) return 0;
