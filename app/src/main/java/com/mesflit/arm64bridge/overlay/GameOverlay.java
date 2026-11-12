@@ -44,6 +44,8 @@ public final class GameOverlay implements Application.ActivityLifecycleCallbacks
     /** Copy memory of this process from/to a byte array; the result is the byte count or a negative errno. */
     static native int nativeMemRead(long address, byte[] dst, int length);
     static native int nativeMemWrite(long address, byte[] src, int length);
+    /** Writes an uncaught Java exception to the bridge log (bridged apps only). */
+    private static native void nativeLogCrash(String text);
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private int limiter;
@@ -67,6 +69,23 @@ public final class GameOverlay implements Application.ActivityLifecycleCallbacks
         if (overlay.limiter < 0 || overlay.limiter >= LIMITER_LABELS.length) overlay.limiter = 0;
         nativeSetLimiter(overlay.limiter);
         app.registerActivityLifecycleCallbacks(overlay);
+        logUncaughtExceptions();
+    }
+
+    /** Java crashes do not go through the bridge's crash handler; this puts them in its log too. */
+    private static void logUncaughtExceptions() {
+        final Thread.UncaughtExceptionHandler previous = Thread.getDefaultUncaughtExceptionHandler();
+        Thread.setDefaultUncaughtExceptionHandler((thread, error) -> {
+            try {
+                java.io.StringWriter text = new java.io.StringWriter();
+                text.append("thread ").append(thread.getName()).append(": ");
+                error.printStackTrace(new java.io.PrintWriter(text));
+                nativeLogCrash(text.toString());
+            } catch (Throwable ignored) {
+                // nothing more to do
+            }
+            if (previous != null) previous.uncaughtException(thread, error);
+        });
     }
 
     /** For apps that run without the bridge (native 64-bit apps): only the value editor. Called by [OverlayInstaller]. */

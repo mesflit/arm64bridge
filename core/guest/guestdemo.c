@@ -821,3 +821,17 @@ JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_ignoredException(J
     if (!str) return 2;
     return (*env)->ExceptionCheck(env) ? 3 : 0;
 }
+
+/* A direct buffer from Java (outside guest memory on 64-bit hosts): read, write, call Java that reads and writes it. */
+JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_directBuffer(JNIEnv* env, jclass cls, jobject buf) {
+    unsigned char* p = (unsigned char*)(*env)->GetDirectBufferAddress(env, buf);
+    if (!p) return 1;
+    if ((*env)->GetDirectBufferCapacity(env, buf) != 256) return 2;
+    if (p[0] != 7) return 3;
+    for (int i = 1; i < 256; i++) p[i] = (unsigned char)(i * 3);
+    jmethodID touch = (*env)->GetStaticMethodID(env, cls, "touchBuffer", "(Ljava/nio/ByteBuffer;)Z");
+    if (!touch || !(*env)->CallStaticBooleanMethod(env, cls, touch, buf)) return 4;
+    if (p[6] != 99) return 5;
+    p[7] = 123;
+    return 0;
+}

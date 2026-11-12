@@ -282,6 +282,19 @@ void JNICALL overlay_set_limiter(JNIEnv*, jclass, jint mode) {
 
 jstring JNICALL overlay_version(JNIEnv* env, jclass) { return env->NewStringUTF(A64B_VERSION); }
 
+// A Java exception that is about to end the app (uncaught), written to the bridge log.
+void JNICALL overlay_log_crash(JNIEnv* env, jclass, jstring text) {
+    std::string t = jstr(env, text);
+    LOGE("=== uncaught Java exception (the app is closing) ===");
+    size_t start = 0;
+    for (int lines = 0; start < t.size() && lines < 80; lines++) {
+        size_t end = t.find('\n', start);
+        if (end == std::string::npos) end = t.size();
+        LOGE("  %s", t.substr(start, end - start).c_str());
+        start = end + 1;
+    }
+}
+
 // Value editor: memory of this process, read and written with process_vm_readv/writev so that a bad
 // address is an error and not a crash. (Opening /proc/self/mem is only allowed in debuggable apps.)
 jint overlay_mem(JNIEnv* env, jlong address, jbyteArray array, jint length, bool write) {
@@ -364,14 +377,15 @@ void load_overlay(JNIEnv* env) {
                                            {const_cast<char*>("nativeFps"), const_cast<char*>("()F"), (void*)overlay_fps},
                                            {const_cast<char*>("nativeVersion"), const_cast<char*>("()Ljava/lang/String;"), (void*)overlay_version},
                                            {const_cast<char*>("nativeMemRead"), const_cast<char*>("(J[BI)I"), (void*)overlay_mem_read},
-                                           {const_cast<char*>("nativeMemWrite"), const_cast<char*>("(J[BI)I"), (void*)overlay_mem_write}};
+                                           {const_cast<char*>("nativeMemWrite"), const_cast<char*>("(J[BI)I"), (void*)overlay_mem_write},
+                                           {const_cast<char*>("nativeLogCrash"), const_cast<char*>("(Ljava/lang/String;)V"), (void*)overlay_log_crash}};
         // The FPS booster controls are an option of the patcher (marker file in the APK).
         std::vector<u8> marker;
         bool booster = zip_extract(g_apk_path, "assets/arm64bridge/fps-booster", marker);
         if (!booster) g_frame_limiter.store(0);
         bool editor = zip_extract(g_apk_path, "assets/arm64bridge/value-editor", marker);
         jmethodID install = env->GetStaticMethodID(overlay, "install", "(Landroid/app/Application;ZZ)V");
-        if (env->RegisterNatives(overlay, natives, 5) != JNI_OK || clear_exc(env) || !install) {
+        if (env->RegisterNatives(overlay, natives, 6) != JNI_OK || clear_exc(env) || !install) {
             clear_exc(env);
             LOGW("in-game menu: could not bind the menu");
             return;

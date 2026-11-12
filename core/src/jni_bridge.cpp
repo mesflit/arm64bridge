@@ -343,6 +343,70 @@ std::string reflected_shorty(JNIEnv* env, jobject member) {
     return shorty;
 }
 
+// ---- direct buffers outside the guest address space -----------------------------
+//
+// Java allocates direct ByteBuffers (ByteBuffer.allocateDirect) anywhere in the 64-bit address
+// space; guest code can only use addresses below 4 GiB. Such a buffer gets a copy in guest memory
+// (a mirror) that guest code works on. The mirror is filled from the Java buffer when guest code asks
+// for its address, and written back when the native method that asked returns to Java, and around
+// calls from guest code into Java. Unity streams its audio this way (AudioTrack and a direct buffer).
+struct Mirror {
+    u32 guest = 0;
+    size_t size = 0;
+};
+std::mutex g_mirror_mu;
+std::unordered_map<void*, Mirror> g_mirrors;
+struct ActiveMirror {
+    void* host;
+    u32 guest;
+    size_t size;
+};
+thread_local std::vector<ActiveMirror> t_active_mirrors;
+
+u32 mirror_direct_buffer(JNIEnv* env, jobject buf, void* host) {
+    jlong cap = env->GetDirectBufferCapacity(buf);
+    if (cap <= 0 || cap > (64 << 20)) {
+        LOGW("GetDirectBufferAddress: buffer %p (%lld bytes) lives outside the 32-bit guest address space", host, (long long)cap);
+        return 0;
+    }
+    Mirror m;
+    {
+        std::lock_guard<std::mutex> lk(g_mirror_mu);
+        Mirror& e = g_mirrors[host];
+        if (e.guest && e.size != (size_t)cap) {
+            g_free(e.guest);
+            e.guest = 0;
+        }
+        if (!e.guest) {
+            e.guest = g_malloc((size_t)cap);
+            e.size = (size_t)cap;
+            if (g_mirrors.size() <= 16 || (g_mirrors.size() & (g_mirrors.size() - 1)) == 0)
+                LOGI("direct buffer %p (%lld bytes) outside guest memory: mirrored at 0x%08x (%zu mirrors)", host, (long long)cap, e.guest,
+                     g_mirrors.size());
+        }
+        m = e;
+    }
+    if (!m.guest) return 0;
+    memcpy(g2h(m.guest), host, m.size);
+    for (auto& a : t_active_mirrors)
+        if (a.host == host) return m.guest;
+    t_active_mirrors.push_back({host, m.guest, m.size});
+    return m.guest;
+}
+
+// Guest -> Java copies of the mirrors this thread uses; from index [from] on.
+void flush_mirrors(size_t from) {
+    for (size_t i = from; i < t_active_mirrors.size(); i++) {
+        const ActiveMirror& a = t_active_mirrors[i];
+        memcpy(a.host, g2h(a.guest), a.size);
+    }
+}
+
+// Java -> guest, after Java code ran.
+void refresh_mirrors() {
+    for (const ActiveMirror& a : t_active_mirrors) memcpy(g2h(a.guest), a.host, a.size);
+}
+
 // A Java exception left pending by guest code.
 //
 // The JNI rules allow only a few functions (ExceptionCheck, Release*, Delete*Ref...) while an exception
@@ -467,6 +531,12 @@ void call_family(Cpu& c, void* ud) {
         }
     }
     const jvalue* av = args.data();
+    // Java code may read or fill direct buffers that guest code works on through mirrors.
+    struct MirrorSync {
+        bool any = !t_active_mirrors.empty();
+        MirrorSync() { if (any) flush_mirrors(0); }
+        ~MirrorSync() { if (any) refresh_mirrors(); }
+    } mirror_sync;
     if (kind == kNew) {
         c.set_ret32(jni_new_local(c, env->NewObjectA((jclass)obj, mid, av)));
         return;
@@ -751,10 +821,11 @@ void build_tables() {
     set_slot(offsetof(Iface, ReleasePrimitiveArrayCritical) / sizeof(void*), "JNI:ReleasePrimitiveArrayCritical", release_elems, (void*)(intptr_t)-1);
 
     HAND(GetDirectBufferAddress, {
-        void* p = env->GetDirectBufferAddress(OBJ());
+        jobject buf = OBJ();
+        void* p = env->GetDirectBufferAddress(buf);
         if (p && !mem_contains((u64)(uintptr_t)p)) {
-            LOGW("GetDirectBufferAddress: buffer %p lives outside the 32-bit guest address space", p);
-            p = nullptr;
+            c.set_ret32(mirror_direct_buffer(env, buf, p));
+            return;
         }
         c.set_ret32((u32)(uintptr_t)p);
     });
@@ -887,7 +958,13 @@ uint64_t a64b_tramp_dispatch(uint32_t index, uint64_t* saved, uint64_t* stack) {
             default: w.push_back((u32)next_int()); break;
         }
     }
+    const size_t mirrors = t_active_mirrors.size();
     u64 r = c.call(m->guest_fn, w.data(), w.size());
+    if (t_active_mirrors.size() > mirrors) {
+        // Back to Java: it sees what guest code wrote into mirrored direct buffers.
+        flush_mirrors(mirrors);
+        t_active_mirrors.resize(mirrors);
+    }
     switch (m->shorty[0]) {
         case 'V': return 0;
         case 'L': return (u64)(uintptr_t)jni_to_host(c, (u32)r);
