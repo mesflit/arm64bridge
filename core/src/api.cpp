@@ -475,6 +475,10 @@ A64B_EXPORT void Java_com_mesflit_arm64bridge_overlay_BridgeStarter_nativeStart(
     java_proc_hook_install();
 }
 
+A64B_EXPORT void Java_com_mesflit_arm64bridge_overlay_BridgeStarter_nativeLog(JNIEnv* env, jclass, jstring text) {
+    LOGW("%s", jstr(env, text).c_str());
+}
+
 A64B_EXPORT void Java_com_mesflit_arm64bridge_NativeBridge_addGuestDirectory(JNIEnv* env, jclass, jstring dir) {
     init_from_environment();
     java_proc_hook_install();  // for the self test

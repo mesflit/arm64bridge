@@ -5,6 +5,8 @@ import android.content.ContentProvider;
 import android.content.ContentValues;
 import android.database.Cursor;
 import android.net.Uri;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 
 /**
@@ -17,17 +19,58 @@ import android.util.Log;
  * of a 32-bit ARM CPU, and it has to be loaded by then.
  */
 public final class BridgeStarter extends ContentProvider {
+    private static final String TAG = "arm64bridge";
+    private static boolean started;
+
     private static native void nativeStart();
+    private static native void nativeLog(String text);
 
     @Override
     public boolean onCreate() {
         try {
             System.loadLibrary("arm64bridge");
             nativeStart();
+            started = true;
         } catch (Throwable t) {
-            Log.e("arm64bridge", "bridge runtime not started early", t);
+            Log.e(TAG, "bridge runtime not started early", t);
         }
+        new Handler(Looper.getMainLooper()).post(BridgeStarter::loopSurvivingOldApiErrors);
         return true;
+    }
+
+    /**
+     * Old apps call APIs in ways that newer Android versions refuse with an exception, on the main
+     * thread, where it ends the app. Example: Google's first in-app billing library binds to
+     * "com.android.vending.billing.MarketBillingService.BIND" with an implicit intent; since
+     * Android 5 bindService throws "Service Intent must be explicit" (and that service no longer
+     * exists anyway). On the old Android the call just failed. This runs the main loop again after
+     * such an exception, so the failing call is skipped and the app goes on (its billing then
+     * reports that it is not supported). Any other exception still ends the app as before.
+     */
+    private static void loopSurvivingOldApiErrors() {
+        while (true) {
+            try {
+                Looper.loop();
+                return;  // the loop ended normally (the app is quitting)
+            } catch (Throwable t) {
+                if (!isOldApiError(t)) throw t;
+                String text = "ignored an error of an old API call on the main thread (as on old Android, the call fails): " + t;
+                Log.w(TAG, text, t);
+                if (started) {
+                    try {
+                        nativeLog(text);
+                    } catch (Throwable ignored) {
+                        // logging is best effort
+                    }
+                }
+            }
+        }
+    }
+
+    private static boolean isOldApiError(Throwable t) {
+        if (!(t instanceof IllegalArgumentException)) return false;
+        String message = t.getMessage();
+        return message != null && message.startsWith("Service Intent must be explicit");
     }
 
     @Override
