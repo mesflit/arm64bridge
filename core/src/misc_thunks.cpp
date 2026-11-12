@@ -7,12 +7,14 @@
 #include <sys/time.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cmath>
 #include <mutex>
 #include <string>
 #include <unordered_map>
 
 #include "elf_loader.h"
+#include "guest_mem.h"
 #include "guest_types.h"
 #include "syscalls.h"
 #include "thunk.h"
@@ -56,9 +58,79 @@ u32 elf_hash(const char* name) {
     return h;
 }
 
+// Symbols that a library loaded by the guest's own linker imports but the bridge does not implement:
+// placeholders, so that linking succeeds and only a real call reports the missing function.
+std::unordered_map<std::string, u32> g_placeholder_syms;
+std::vector<u32> g_scanned_images;
+
+bool provided(const std::string& name) { return thunk_exists(name) || loader_lookup(name) != 0; }
+
+// Finds ELF images in guest memory that our loader did not load (mapped by the guest's own linker)
+// and adds placeholders for their undefined symbols. Returns true if any were added.
+bool add_imports_of_foreign_images() {
+    bool added = false;
+    const u32 page = mem_page_size();
+    for (auto& r : mem_used_regions()) {
+        for (u32 a = r.first; a + 64 <= r.first + r.second; a += page) {
+            const u8* h = g2h<u8>(a);
+            if (h[0] != 0x7f || h[1] != 'E' || h[2] != 'L' || h[3] != 'F' || h[4] != 1) continue;
+            if (*g2h<u16>(a + 16) != 3 || *g2h<u16>(a + 18) != 40) continue;  // ET_DYN, EM_ARM
+            if (loader_module_for(a)) continue;                                 // ours
+            if (std::find(g_scanned_images.begin(), g_scanned_images.end(), a) != g_scanned_images.end()) continue;
+            g_scanned_images.push_back(a);
+            u32 phoff = *g2h<u32>(a + 28), phnum = *g2h<u16>(a + 44);
+            if (phoff > page - 32 * phnum || phnum > 32) continue;
+            u32 bias = 0, dyn = 0;
+            bool have_load = false;
+            for (u32 i = 0; i < phnum; i++) {
+                const u32* ph = g2h<u32>(a + phoff + i * 32);
+                if (ph[0] == 1 && !have_load) {  // first PT_LOAD maps the header
+                    bias = a - (ph[2] & ~(page - 1));
+                    have_load = true;
+                }
+                if (ph[0] == 2) dyn = ph[2];  // PT_DYNAMIC vaddr
+            }
+            if (!have_load || !dyn) continue;
+            auto addr = [&](u32 v) { return v >= bias && mem_is_mapped(v, 4) && v - bias < 0x10000000u ? v : bias + v; };
+            u32 d = bias + dyn, symtab = 0, strtab = 0, hash = 0;
+            for (int i = 0; i < 256 && mem_is_mapped(d + i * 8, 8); i++) {
+                u32 tag = *g2h<u32>(d + i * 8), val = *g2h<u32>(d + i * 8 + 4);
+                if (tag == 0) break;
+                if (tag == 4) hash = addr(val);
+                if (tag == 5) strtab = addr(val);
+                if (tag == 6) symtab = addr(val);
+            }
+            if (!symtab || !strtab || !hash || !mem_is_mapped(hash, 8)) continue;
+            u32 nsyms = *g2h<u32>(hash + 4), count = 0;
+            for (u32 i = 1; i < nsyms && mem_is_mapped(symtab + i * 16, 16); i++) {
+                const u32* sym = g2h<u32>(symtab + i * 16);
+                u8 info = *g2h<u8>(symtab + i * 16 + 12);
+                u16 shndx = *g2h<u16>(symtab + i * 16 + 14);
+                if (shndx != 0 || !sym[0] || (info >> 4) == 2) continue;  // defined, unnamed or weak
+                if (!mem_is_mapped(strtab + sym[0], 1)) continue;
+                std::string name = g2h<char>(strtab + sym[0]);
+                if (name.empty() || provided(name) || g_placeholder_syms.count(name)) continue;
+                // Data gets a zeroed block, functions a stub that reports the call.
+                g_placeholder_syms[name] = (info & 0xf) == 1 ? g_calloc(1, 256) : thunk_missing(name);
+                count++;
+            }
+            if (count) {
+                std::string list;
+                for (auto& kv : g_placeholder_syms) list += (list.empty() ? "" : " ") + kv.first;
+                LOGW("library loaded by the app's own linker at 0x%08x needs %u functions the bridge does not have: %s", a, count,
+                     list.c_str());
+                added = true;
+            }
+        }
+    }
+    return added;
+}
+
 void build_system_symbol_table() {
-    if (g_sys_symtab) return;
+    bool extra = add_imports_of_foreign_images();
+    if (g_sys_symtab && !extra) return;
     auto syms = thunk_resolve_all();
+    for (auto& kv : g_placeholder_syms) syms.emplace_back(kv.first, kv.second);
     u32 n = (u32)syms.size();
     size_t str_size = 1;
     for (auto& kv : syms) str_size += kv.first.size() + 1;
@@ -86,11 +158,24 @@ void build_system_symbol_table() {
     LOGI("dlopen: symbol table of the bridge for old-style handles: %u symbols", n);
 }
 
+void update_fake_soinfos() {
+    for (auto& kv : g_fake_soinfos) {
+        u32 si = kv.second;
+        *g2h<u32>(si + 0xac) = g_sys_strtab;
+        *g2h<u32>(si + 0xb0) = g_sys_symtab;
+        *g2h<u32>(si + 0xb4) = g_sys_nbucket;
+        *g2h<u32>(si + 0xb8) = g_sys_nchain;
+        *g2h<u32>(si + 0xbc) = g_sys_bucket;
+        *g2h<u32>(si + 0xc0) = g_sys_chain;
+    }
+}
+
 u32 fake_soinfo(const std::string& name) {
     std::lock_guard<std::mutex> lk(g_soinfo_mu);
+    build_system_symbol_table();  // also picks up the imports of a library the guest's linker just mapped
+    update_fake_soinfos();
     auto it = g_fake_soinfos.find(name);
     if (it != g_fake_soinfos.end()) return it->second;
-    build_system_symbol_table();
     u32 si = g_calloc(1, 1024);
     snprintf(g2h<char>(si), 128, "%s", name.c_str());
     *g2h<u32>(si + 0xa8) = 1;  // FLAG_LINKED
@@ -268,6 +353,8 @@ void register_misc_thunks() {
         return m->base;
     });
     reg("dlclose", +[](u32) -> int { return 0; });
+    // ARM EABI: the thread pointer (TPIDRURO), same value as the kernel's __kuser_get_tls.
+    reg_raw("__aeabi_read_tp", [](Cpu& c) { c.set_ret32(c.tls_block); });
     reg("dlsym", +[](u32 handle, const char* name) -> u32 {
         u32 a = 0;
         if (Module* m = module_from_handle(handle)) a = m->find(name);
@@ -275,6 +362,11 @@ void register_misc_thunks() {
         if (!a && (handle == 0 || handle >= 0xFFFFFFFE || system || !module_from_handle(handle))) {
             if (!system) a = loader_lookup(name);
             if (!a) a = thunk_resolve(name);
+            if (!a && system) {
+                std::lock_guard<std::mutex> lk(g_soinfo_mu);
+                auto p = g_placeholder_syms.find(name);
+                if (p != g_placeholder_syms.end()) a = p->second;
+            }
         }
         if (!a) set_dlerror(std::string("undefined symbol: ") + name);
         return a;

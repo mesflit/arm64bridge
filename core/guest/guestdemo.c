@@ -539,3 +539,49 @@ JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_soinfo(JNIEnv* env
     }
     return 0;
 }
+
+/* A library mapped by the app's own linker imports a function the bridge lacks: after dlopen of a
+   system library, the name is in the old-style symbol table and its stub returns 0. */
+JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_foreignImports(JNIEnv* env, jclass cls) {
+    unsigned char* img = mmap(NULL, 2 * 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (img == MAP_FAILED) return 1;
+    unsigned* w;
+    /* ELF header */
+    img[0] = 0x7f; img[1] = 'E'; img[2] = 'L'; img[3] = 'F'; img[4] = 1; img[5] = 1; img[6] = 1;
+    *(unsigned short*)(img + 16) = 3;   /* ET_DYN */
+    *(unsigned short*)(img + 18) = 40;  /* EM_ARM */
+    *(unsigned*)(img + 28) = 52;        /* phoff */
+    *(unsigned short*)(img + 42) = 32;
+    *(unsigned short*)(img + 44) = 2;   /* phnum */
+    w = (unsigned*)(img + 52);          /* PT_LOAD at 0, PT_DYNAMIC at 0x200 */
+    w[0] = 1; w[1] = 0; w[2] = 0; w[3] = 0; w[4] = 0x2000; w[5] = 0x2000; w[6] = 6; w[7] = 0x1000;
+    w[8] = 2; w[9] = 0x200; w[10] = 0x200; w[11] = 0x200; w[12] = 64; w[13] = 64; w[14] = 6; w[15] = 4;
+    /* strtab at 0x400, symtab at 0x500 (2 symbols), hash at 0x600 */
+    const char name[] = "a64b_test_missing_function";
+    for (unsigned i = 0; i < sizeof(name); i++) img[0x401 + i] = name[i];
+    w = (unsigned*)(img + 0x510);
+    w[0] = 1; w[1] = 0; w[2] = 0; img[0x510 + 12] = (1 << 4) | 2; /* GLOBAL FUNC, undefined */
+    w = (unsigned*)(img + 0x600); w[0] = 1; w[1] = 2;
+    w = (unsigned*)(img + 0x200);
+    w[0] = 4; w[1] = 0x600; w[2] = 5; w[3] = 0x400; w[4] = 6; w[5] = 0x500; w[6] = 0; w[7] = 0;
+
+    struct sym { unsigned name, value, size; unsigned char info, other; unsigned short shndx; };
+    char* si = dlopen("libm.so", 0);
+    if (!si) return 2;
+    const char* strtab = *(const char**)(si + 0xac);
+    struct sym* symtab = *(struct sym**)(si + 0xb0);
+    unsigned nbucket = *(unsigned*)(si + 0xb4);
+    unsigned* bucket = *(unsigned**)(si + 0xbc);
+    unsigned* chain = *(unsigned**)(si + 0xc0);
+    void* found = 0;
+    for (unsigned n = bucket[old_elf_hash(name) % nbucket]; n; n = chain[n]) {
+        const char* a = strtab + symtab[n].name;
+        const char* b = name;
+        while (*a && *a == *b) { a++; b++; }
+        if (!*a && !*b) { found = (void*)symtab[n].value; break; }
+    }
+    munmap(img, 2 * 4096);
+    if (!found) return 4;
+    if (((int (*)(void))found)() != 0) return 8;
+    return 0;
+}

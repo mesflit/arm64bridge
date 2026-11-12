@@ -4,6 +4,9 @@
 #pragma once
 #include "common.h"
 
+#include <utility>
+#include <vector>
+
 namespace a64b {
 
 enum { GPROT_READ = 1, GPROT_WRITE = 2, GPROT_EXEC = 4 };
@@ -33,6 +36,8 @@ u32 page_map_file(u32 size, int host_prot, int host_flags, int fd, i64 offset);
 u32 page_map_at(u32 addr, u32 size, int host_prot, int host_flags, int fd, i64 offset, bool fixed);
 bool page_free(u32 addr, u32 size);
 void page_mark_exec(u32 addr, u32 size);
+// Allocated arena regions (start, size).
+std::vector<std::pair<u32, u32>> mem_used_regions();
 
 // malloc family living inside the arena.
 u32 g_malloc(u32 size);

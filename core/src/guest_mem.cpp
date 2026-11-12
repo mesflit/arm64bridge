@@ -353,6 +353,13 @@ bool page_free(u32 addr, u32 size) {
     return true;
 }
 
+std::vector<std::pair<u32, u32>> mem_used_regions() {
+    std::lock_guard<std::mutex> lk(g_page_mu);
+    std::vector<std::pair<u32, u32>> out;
+    for (auto& kv : g_used_regions) out.emplace_back(kv.first, kv.second.size);
+    return out;
+}
+
 void page_mark_exec(u32 addr, u32 size) {
     (void)size;
     std::lock_guard<std::mutex> lk(g_page_mu);
