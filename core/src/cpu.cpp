@@ -81,6 +81,24 @@ void return_trap(Cpu&, void*) {}
 
 // Identity page table: entry = host address of the guest page (guest address == host address).
 using PageTable = std::array<std::uint8_t*, Dynarmic::A32::UserConfig::NUM_PAGE_TABLE_ENTRIES>;
+// The ARM Linux "kuser helpers": routines the kernel provides at fixed addresses at the top of the
+// address space. Old libraries (GCC's atomics, some libstdc++/bionic builds) call them directly.
+constexpr u32 kKuserPage = 0xFFFF0000u;
+u32 kuser_word(u32 a) {
+    static const u32 cmpxchg64[] = {0xe92d40f0, 0xe8900030, 0xe89100c0, 0xe1b20f9f, 0xe0303004, 0x00313005,
+                                    0x01a23f96, 0x03330001, 0x0afffff9, 0xe2730000, 0xe8bd80f0};
+    static const u32 barrier[] = {0xf57ff05f, 0xe12fff1e};
+    static const u32 cmpxchg[] = {0xe1923f9f, 0xe0533000, 0x01823f91, 0x03330001, 0x0afffffa, 0xe2730000, 0xe12fff1e};
+    static const u32 get_tls[] = {0xee1d0f70, 0xe12fff1e};
+    u32 off = a & 0xFFCu;
+    if (off >= 0xF60 && off < 0xF60 + sizeof(cmpxchg64)) return cmpxchg64[(off - 0xF60) / 4];  // __kuser_cmpxchg64
+    if (off >= 0xFA0 && off < 0xFA0 + sizeof(barrier)) return barrier[(off - 0xFA0) / 4];        // __kuser_memory_barrier
+    if (off >= 0xFC0 && off < 0xFC0 + sizeof(cmpxchg)) return cmpxchg[(off - 0xFC0) / 4];        // __kuser_cmpxchg
+    if (off >= 0xFE0 && off < 0xFE0 + sizeof(get_tls)) return get_tls[(off - 0xFE0) / 4];        // __kuser_get_tls
+    if (off == 0xFFC) return 5;                                                                   // __kuser_helper_version
+    return 0xe7f000f0;  // undefined instruction
+}
+
 PageTable* g_page_table = nullptr;
 
 // LDREX/STREX across guest threads.
@@ -247,6 +265,7 @@ struct CpuLevel final : Dynarmic::A32::UserCallbacks {
     }
 
     std::optional<std::uint32_t> MemoryReadCode(std::uint32_t a) override {
+        if (a >= kKuserPage) return kuser_word(a);
         if (!mem_contains(a)) return std::nullopt;
         return *g2h<u32>(a);
     }

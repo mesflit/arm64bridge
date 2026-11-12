@@ -30,6 +30,8 @@ public final class GuestDemo {
     public static native int recallLength();
     public static native long frameLimiter(long frameMicros);
     public static native int frameSleep(int elapsedMillis);
+    public static native int kuser();
+    public static native int mmapFixed();
     // Registered from JNI_OnLoad with RegisterNatives:
     public native String registered(int x, String s);
     public static native boolean sameEnv();
@@ -61,6 +63,10 @@ public final class GuestDemo {
         check(sb, failed, "sumArray", sumArray(arr) == 10 && arr[0] == 2 && arr[3] == 8);
         // FPS booster off: the limiter code must see the game's own frame time.
         check(sb, failed, "frame limiter (booster off)", frameLimiter(33333L) == 33333L);
+        int kuser = kuser();
+        check(sb, failed, "kernel user helpers (" + kuser + ")", kuser == 0);
+        int mm = mmapFixed();
+        check(sb, failed, "mmap at requested addresses (" + mm + ")", mm == 0);
         // Game loop frame sleep: 10 ms into a 30 ms frame it must sleep about 20 ms (booster off).
         long sleepStart = System.nanoTime();
         int slept = frameSleep(10);

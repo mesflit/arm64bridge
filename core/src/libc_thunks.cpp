@@ -3,6 +3,7 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <fcntl.h>
+#include <fnmatch.h>
 #include <locale.h>
 #include <poll.h>
 #include <sched.h>
@@ -12,6 +13,7 @@
 #include <sys/resource.h>
 #include <sys/select.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/time.h>
 #include <sys/types.h>
@@ -20,6 +22,7 @@
 #include <wchar.h>
 #include <wctype.h>
 
+#include <atomic>
 #include <mutex>
 #include <unordered_map>
 
@@ -117,14 +120,28 @@ u32 tm_buf() {
 }
 
 void do_mmap(Cpu& c, i64 offset_bytes, u32 addr, u32 len, int prot, int flags, int fd) {
-    (void)addr;
     if (len == 0) {
         errno = EINVAL;
         c.set_ret32(0xFFFFFFFF);
         return;
     }
-    u32 res;
-    if (flags & MAP_ANONYMOUS) {
+    u32 res = 0;
+    const bool fixed = (flags & MAP_FIXED) != 0;
+    if (addr) {
+        // A requested address: libraries that load other libraries themselves depend on it.
+        res = page_map_at(addr, len, prot, flags, (flags & MAP_ANONYMOUS) ? -1 : fd, offset_bytes, fixed);
+        static std::atomic<int> logged{0};
+        if (logged.fetch_add(1) < 24)
+            LOGI("mmap(0x%08x, %u, prot %d, flags 0x%x%s) = %s", addr, len, prot, flags, fixed ? " FIXED" : "",
+                 res ? "at that address" : fixed ? "FAILED" : "elsewhere");
+        if (!res && fixed) {
+            errno = ENOMEM;
+            c.set_ret32(0xFFFFFFFF);
+            return;
+        }
+    }
+    if (res) {
+    } else if (flags & MAP_ANONYMOUS) {
         res = page_alloc(len, (prot & PROT_EXEC) != 0);
     } else {
         int hflags = (flags & MAP_SHARED) ? MAP_SHARED : MAP_PRIVATE;
@@ -568,6 +585,21 @@ void register_libc_thunks() {
     reg("ftruncate64", +[](int fd, long long len) -> int { return ftruncate(fd, len); });
     reg("truncate", +[](const char* p, i32 len) -> int { return truncate(p, len); });
     reg("access", +[](const char* p, int m) -> int { return access(p, m); });
+    reg("utime", +[](const char* p, const i32* times) -> int {
+        if (!times) return utimensat(AT_FDCWD, p, nullptr, 0);
+        timespec ts[2] = {{times[0], 0}, {times[1], 0}};  // guest struct utimbuf { actime, modtime }
+        return utimensat(AT_FDCWD, p, ts, 0);
+    });
+    reg("pathconf", +[](const char* p, int name) -> int { return (int)pathconf(p, name); });
+    reg("fpathconf", +[](int fd, int name) -> int { return (int)fpathconf(fd, name); });
+    reg("fnmatch", +[](const char* pattern, const char* str, int flags) -> int { return fnmatch(pattern, str, flags); });
+    // The result points into the argument (GNU behaviour): host basename() may return host-only storage.
+    auto base_name = +[](const char* p) -> char* {
+        const char* slash = p ? strrchr(p, '/') : nullptr;
+        return (char*)(slash ? slash + 1 : p);
+    };
+    reg("basename", base_name);
+    reg("__gnu_basename", base_name);
     reg("unlink", +[](const char* p) -> int { return unlink(p); });
     reg("rmdir", +[](const char* p) -> int { return rmdir(p); });
     reg("mkdir", +[](const char* p, int m) -> int { return mkdir(p, m); });

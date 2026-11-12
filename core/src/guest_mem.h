@@ -24,6 +24,10 @@ void mem_bump_code_epoch();
 u32 page_alloc(u32 size, bool exec = false);
 // Map a file (or anonymous memory if fd < 0) at a guest address chosen by us.
 u32 page_map_file(u32 size, int host_prot, int host_flags, int fd, i64 offset);
+// Map at the guest address the guest asked for (anonymous if fd < 0). With `fixed` an existing guest
+// mapping there is replaced (MAP_FIXED); without it the address is only used when it is free.
+// Addresses outside the arena are used when the host has nothing there. Returns 0 if not possible.
+u32 page_map_at(u32 addr, u32 size, int host_prot, int host_flags, int fd, i64 offset, bool fixed);
 bool page_free(u32 addr, u32 size);
 void page_mark_exec(u32 addr, u32 size);
 

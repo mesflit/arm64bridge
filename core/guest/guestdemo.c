@@ -10,6 +10,7 @@
 #ifdef __ANDROID__
 #include <android/log.h>
 #include <stdint.h>
+#include <sys/mman.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <unistd.h>
@@ -401,4 +402,60 @@ JNIEXPORT jlong JNICALL Java_com_mesflit_arm64bridge_GuestDemo_frameLimiter(JNIE
 JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_frameSleep(JNIEnv* env, jclass cls, jint elapsed_ms) {
     long long now = 1000000, last = now - elapsed_ms, store = 0;
     return test_frame_sleep((unsigned)now, 0, &last, &store);
+}
+
+/* ARM Linux kernel user helpers at their fixed addresses; returns 0 when all of them work. */
+JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_kuser(JNIEnv* env, jclass cls) {
+    typedef int (*cmpxchg_t)(int oldval, int newval, volatile int* ptr);
+    typedef int (*cmpxchg64_t)(const long long* oldval, const long long* newval, volatile long long* ptr);
+    typedef void (*barrier_t)(void);
+    typedef void* (*get_tls_t)(void);
+    cmpxchg_t cmpxchg = (cmpxchg_t)0xffff0fc0;
+    cmpxchg64_t cmpxchg64 = (cmpxchg64_t)0xffff0f60;
+    int failed = 0;
+    volatile int v = 5;
+    if (cmpxchg(5, 7, &v) != 0 || v != 7) failed |= 1;
+    if (cmpxchg(5, 9, &v) == 0 || v != 7) failed |= 2;
+    ((barrier_t)0xffff0fa0)();
+    volatile long long w = 0x100000002LL;
+    long long o = 0x100000002LL, n = 0x300000004LL, bad = 1;
+    if (cmpxchg64(&o, &n, &w) != 0 || w != n) failed |= 4;
+    if (cmpxchg64(&bad, &o, &w) == 0 || w != n) failed |= 8;
+    if (((get_tls_t)0xffff0fe0)() != __builtin_thread_pointer()) failed |= 16;
+    return failed;
+}
+
+void* mmap(void* addr, unsigned len, int prot, int flags, int fd, long offset);
+int munmap(void* addr, unsigned len);
+#define PROT_NONE 0
+#define PROT_READ 1
+#define PROT_WRITE 2
+#define MAP_PRIVATE 2
+#define MAP_FIXED 0x10
+#define MAP_ANONYMOUS 0x20
+#define MAP_FAILED ((void*)-1)
+
+/* mmap at requested addresses, as a library loader inside a game does; returns 0 when everything works. */
+JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_mmapFixed(JNIEnv* env, jclass cls) {
+    int failed = 0;
+    /* Reserve a range, then map pages at exact addresses inside it. */
+    char* r = mmap(NULL, 16 * 4096, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (r == MAP_FAILED) return 1;
+    r[5 * 4096] = 42;
+    char* q = mmap(r + 4 * 4096, 2 * 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    if (q != r + 4 * 4096) failed |= 2;
+    else if (q[4096] != 0) failed |= 4; /* a fixed mapping replaces the old pages */
+    else { q[0] = 7; if (r[4 * 4096] != 7) failed |= 8; }
+    munmap(r, 16 * 4096);
+    /* A hint for free memory is honoured: the range just released. */
+    char* h = mmap(r, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (h != r) failed |= 16;
+    if (h != MAP_FAILED) munmap(h, 4096);
+    /* An address outside the bridge's own arena works when the host has nothing there. */
+    volatile int* x = mmap((void*)0x23450000, 2 * 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    if (x != MAP_FAILED) {
+        if ((unsigned)x != 0x23450000u) failed |= 32;
+        else { x[1000] = 123456; if (x[1000] != 123456) failed |= 64; munmap((void*)x, 2 * 4096); }
+    }
+    return failed;
 }

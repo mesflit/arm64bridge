@@ -26,12 +26,31 @@ static std::atomic<u64> g_epoch{1};
 u32 mem_arena_base() { return g_base; }
 u32 mem_arena_size() { return g_size; }
 u32 mem_page_size() { return g_page; }
-bool mem_contains(u64 a) { return a >= g_base && a < (u64)g_base + g_size; }
+// Guest mappings outside the arena: made when the guest asks for a specific address there (a game's
+// own library loader with fixed load addresses). Few, so a small array that readers scan without a lock.
+struct ExtRegion { std::atomic<u32> start{0}, size{0}; };
+static ExtRegion g_ext[64];
+static std::atomic<int> g_ext_count{0};
+
+static int ext_index(u64 a) {
+    int n = g_ext_count.load(std::memory_order_acquire);
+    for (int i = 0; i < n; i++) {
+        u32 st = g_ext[i].start.load(std::memory_order_relaxed), sz = g_ext[i].size.load(std::memory_order_relaxed);
+        if (sz && a >= st && a < (u64)st + sz) return i;
+    }
+    return -1;
+}
+
+bool mem_contains(u64 a) {
+    if (a >= g_base && a < (u64)g_base + g_size) return true;
+    return g_ext_count.load(std::memory_order_relaxed) != 0 && ext_index(a) >= 0;
+}
 u64 mem_code_epoch() { return g_epoch.load(std::memory_order_relaxed); }
 void mem_bump_code_epoch() { g_epoch.fetch_add(1, std::memory_order_relaxed); }
 
 bool mem_is_mapped(u32 addr, u32 len) {
     if (!mem_contains(addr) || !mem_contains((u64)addr + len - 1)) return false;
+    if (addr < g_base || addr >= (u64)g_base + g_size) return true;  // external mapping
     std::unique_lock<std::mutex> lk(g_page_mu, std::try_to_lock);
     if (!lk.owns_lock()) return false;
     auto it = g_used_regions.upper_bound(addr);
@@ -163,10 +182,96 @@ u32 page_map_file(u32 size, int host_prot, int host_flags, int fd, i64 offset) {
     return a;
 }
 
+// True if [addr, addr + size) is completely inside allocated arena regions. Needs g_page_mu.
+static bool covered_by_used(u32 addr, u32 size) {
+    u64 pos = addr, end = (u64)addr + size;
+    while (pos < end) {
+        auto it = g_used_regions.upper_bound((u32)pos);
+        if (it == g_used_regions.begin()) return false;
+        --it;
+        u64 rend = (u64)it->first + it->second.size;
+        if (pos >= rend) return false;
+        pos = rend;
+    }
+    return true;
+}
+
+u32 page_map_at(u32 addr, u32 size, int host_prot, int host_flags, int fd, i64 offset, bool fixed) {
+    size = round_up(size, g_page);
+    if (!addr || !size || (addr & (g_page - 1)) || (u64)addr + size > 0xFFFF0000ull) return 0;
+    const bool exec = (host_prot & PROT_EXEC) != 0;
+    const int prot = (host_prot & PROT_WRITE) | PROT_READ;  // the host never executes guest code
+    const int type = (host_flags & MAP_SHARED) ? MAP_SHARED : MAP_PRIVATE;
+    const int anon = fd < 0 ? MAP_ANONYMOUS : 0;
+    std::lock_guard<std::mutex> lk(g_page_mu);
+    const bool in_arena = addr >= g_base && (u64)addr + size <= (u64)g_base + g_size;
+    if (in_arena) {
+        if (covered_by_used(addr, size)) {
+            if (!fixed) return 0;  // a hint for memory that is in use
+            if (mmap(g2h(addr), size, prot, type | anon | MAP_FIXED, fd, offset) == MAP_FAILED) return 0;
+            if (exec) {
+                auto it = std::prev(g_used_regions.upper_bound(addr));
+                it->second.exec = true;
+                mem_bump_code_epoch();
+            }
+            return addr;
+        }
+        // Completely inside one free region: carve it out.
+        auto it = g_free_regions.upper_bound(addr);
+        if (it == g_free_regions.begin()) return 0;
+        --it;
+        u32 fs = it->first, fsz = it->second;
+        if ((u64)addr + size > (u64)fs + fsz) return 0;
+        g_free_regions.erase(it);
+        if (addr > fs) g_free_regions[fs] = addr - fs;
+        if ((u64)addr + size < (u64)fs + fsz) g_free_regions[addr + size] = fs + fsz - (addr + size);
+        bool ok = fd < 0 ? mprotect(g2h(addr), size, PROT_READ | PROT_WRITE) == 0
+                         : mmap(g2h(addr), size, prot, type | MAP_FIXED, fd, offset) != MAP_FAILED;
+        if (!ok) {
+            give_region(addr, size);
+            return 0;
+        }
+        g_used_regions[addr] = Region{size, exec};
+        return addr;
+    }
+    if ((u64)addr + size > g_base && addr < (u64)g_base + g_size) return 0;  // straddles the arena edge
+    // Outside the arena.
+    int e = ext_index(addr);
+    if (e >= 0) {
+        u32 st = g_ext[e].start.load(), sz = g_ext[e].size.load();
+        if (!fixed || (u64)addr + size > (u64)st + sz) return 0;
+        if (mmap(g2h(addr), size, prot, type | anon | MAP_FIXED, fd, offset) == MAP_FAILED) return 0;
+        mem_bump_code_epoch();
+        return addr;
+    }
+    int n = g_ext_count.load();
+    if (n >= (int)(sizeof(g_ext) / sizeof(g_ext[0]))) return 0;
+    void* p = mmap(g2h(addr), size, prot, type | anon | MAP_FIXED_NOREPLACE, fd, offset);
+    if (p == MAP_FAILED) return 0;
+    if (p != g2h(addr)) {  // kernel without MAP_FIXED_NOREPLACE treated it as a hint
+        munmap(p, size);
+        return 0;
+    }
+    g_ext[n].start.store(addr);
+    g_ext[n].size.store(size);
+    g_ext_count.store(n + 1, std::memory_order_release);
+    if (exec) mem_bump_code_epoch();
+    return addr;
+}
+
 bool page_free(u32 addr, u32 size) {
     size = round_up(size, g_page);
     if (!mem_contains(addr) || !size || (addr & (g_page - 1))) return false;
     std::lock_guard<std::mutex> lk(g_page_mu);
+    if (addr < g_base || addr >= (u64)g_base + g_size) {
+        // External mapping: give the pages back; the range stays reserved for the guest.
+        int e = ext_index(addr);
+        if (e < 0) return false;
+        u32 st = g_ext[e].start.load(), sz = g_ext[e].size.load();
+        if ((u64)addr + size > (u64)st + sz) size = st + sz - addr;
+        mmap(g2h(addr), size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED, -1, 0);
+        return true;
+    }
     // Find the region containing addr; partial unmaps split the bookkeeping.
     auto it = g_used_regions.upper_bound(addr);
     if (it == g_used_regions.begin()) return false;
