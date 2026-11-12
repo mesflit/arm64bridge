@@ -65,17 +65,7 @@ Probe* probe_for_this_thread() {
     return t_probe->reports < (int)(sizeof(REPORT_FRAMES) / sizeof(REPORT_FRAMES[0])) ? t_probe : nullptr;
 }
 
-void dump_code(u32 addr) {
-    addr &= ~1u;
-    u32 start = (addr - 384) & ~15u, end = addr + 256;
-    for (u32 a = start; a < end; a += 16) {
-        if (!mem_is_mapped(a, 16)) continue;
-        const u8* b = g2h<u8>(a);
-        std::string line = strfmt("    %08x:", a);
-        for (int i = 0; i < 16; i++) line += strfmt(i % 4 == 0 ? " %02x" : "%02x", b[i]);
-        LOGI("%s", line.c_str());
-    }
-}
+void dump_code(u32 addr) { dump_guest_code(addr, 384, 256); }
 
 void report(Probe& p) {
     p.reports++;
@@ -116,6 +106,41 @@ void report(Probe& p) {
 }
 
 }  // namespace
+
+void dump_guest_code(u32 addr, u32 before, u32 after) {
+    addr &= ~1u;
+    u32 start = (addr - before) & ~15u, end = addr + after;
+    for (u32 a = start; a < end; a += 16) {
+        if (!mem_is_mapped(a, 16)) continue;
+        const u8* b = g2h<u8>(a);
+        std::string line = strfmt("    %08x:", a);
+        for (int i = 0; i < 16; i++) line += strfmt(i % 4 == 0 ? " %02x" : "%02x", b[i]);
+        LOGI("%s", line.c_str());
+    }
+}
+
+void dump_guest_caller(Cpu& c, const char* why) {
+    LOGI("%s: r0=%08x r1=%08x r2=%08x r3=%08x r4=%08x r5=%08x r6=%08x r7=%08x", why, c.r[0], c.r[1], c.r[2], c.r[3], c.r[4],
+         c.r[5], c.r[6], c.r[7]);
+    LOGI("  r8=%08x r9=%08x r10=%08x r11=%08x ip=%08x sp=%08x lr=%08x", c.r[8], c.r[9], c.r[10], c.r[11], c.r[12], c.r[13], c.r[14]);
+    LOGI("  called from %s (%s)", describe_address(c.r[14] & ~1u).c_str(), (c.r[14] & 1) ? "thumb" : "arm");
+    dump_guest_code(c.r[14], 1536, 256);
+    // Its callers: code addresses on the guest stack.
+    std::vector<std::pair<u32, u32>> text;
+    for (Module* m : loader_modules()) text.emplace_back(m->base, m->base + m->size);
+    u32 sp = c.r[13];
+    if (sp < c.stack_base || sp >= c.stack_base + c.stack_size) return;
+    int found = 0;
+    for (u32 a = sp; a + 4 <= c.stack_base + c.stack_size && a < sp + 1024 && found < 3; a += 4) {
+        u32 v = *g2h<u32>(a) & ~1u;
+        bool code = false;
+        for (auto& r : text) code = code || (v >= r.first && v < r.second);
+        if (!code || v == (c.r[14] & ~1u)) continue;
+        found++;
+        LOGI("  caller (stack sp+0x%x): %s (%s)", a - sp, describe_address(v).c_str(), (*g2h<u32>(a) & 1) ? "thumb" : "arm");
+        dump_guest_code(v, 512, 128);
+    }
+}
 
 void probe_time_call(int kind, u64 sleep_us) {
     Probe* p = probe_for_this_thread();

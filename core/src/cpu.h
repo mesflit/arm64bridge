@@ -111,6 +111,9 @@ extern std::atomic<int> g_frame_limiter;
 // Frame limiter probe (limiter_probe.cpp). kind: 0 gettimeofday, 1 clock_gettime, 2 sleep, 3 sched_yield.
 void probe_time_call(int kind, u64 sleep_us = 0);
 void probe_frame();
+// Hex dump of guest code around addr, and the state and callers of the current guest call (diagnostics).
+void dump_guest_code(u32 addr, u32 before, u32 after);
+void dump_guest_caller(Cpu& c, const char* why);
 // FPS booster for clock-based frame limiters (frame_cap.cpp).
 struct Module;
 void frame_cap_scan(Module* m);

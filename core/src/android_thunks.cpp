@@ -3,6 +3,7 @@
 #include <sys/resource.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -31,6 +32,11 @@ namespace {
 
 void guest_log(int prio, const char* tag, const std::string& msg) {
     log_tagged(prio, tag && *tag ? tag : "guest", msg.c_str());
+    // The first error messages of the guest come with the code that wrote them: a loader or check
+    // inside a game often fails without saying why.
+    static std::atomic<int> errors{0};
+    if (prio >= 6 && errors.fetch_add(1) < 2)
+        if (Cpu* c = Cpu::current_or_null()) dump_guest_caller(*c, "guest error message");
 }
 
 // 64-bit host pointers that the guest only stores and passes back (EGL handles,

@@ -48,7 +48,7 @@ final class ValueEditor {
         Type(String label, int size, int align) { this.label = label; this.size = size; this.align = align; }
     }
 
-    private static final int MAX_RESULTS = 1_000_000;
+    private static final int LIST_LIMIT = 100_000;
     private static final int SHOWN = 60;
     private static final int CHUNK = 1 << 20;
 
@@ -57,8 +57,8 @@ final class ValueEditor {
     private Handler main;  // created with the dialog
     private Type type = Type.DWORD;
     private long[] results = new long[0];
-    private int count;          // stored results
-    private long found;         // results of the last search (can exceed what is stored)
+    private int count;          // results (entries of [results] when there is no bitmap)
+    private long found;         // results of the last search or refine
     private boolean busy;
     private final Map<Long, Object[]> frozen = new LinkedHashMap<>();  // address -> {Type, Number}
     private Thread freezer;
@@ -259,51 +259,112 @@ final class ValueEditor {
         return decode(ByteBuffer.wrap(b).order(ByteOrder.LITTLE_ENDIAN), 0, t);
     }
 
+    /**
+     * Results of a search with many matches (a value such as 0 is everywhere): one bit per aligned
+     * location of each memory region, so nothing has to be dropped. Once few are left they become a list.
+     */
+    private static final class Hits {
+        final long start, end;
+        final int align;
+        final java.util.BitSet bits;
+
+        Hits(long start, long length, int align) {
+            this.start = start;
+            this.end = start + length;
+            this.align = align;
+            this.bits = new java.util.BitSet((int) (length / align));
+        }
+    }
+
+    private List<Hits> bitmap;  // non-null while there are too many results for a list
+
     /** First search: every aligned location of the whole writable memory that holds [want]. */
     private String search(double want) throws IOException {
         Memory m = memory();
-        long[] out = new long[1024];
-        int n = 0;
+        List<Hits> hits = new ArrayList<>();
         long total = 0, scanned = 0;
         byte[] chunk = new byte[CHUNK];
         ByteBuffer buf = ByteBuffer.wrap(chunk).order(ByteOrder.LITTLE_ENDIAN);
         for (long[] reg : regions()) {
+            Hits h = null;
             for (long pos = reg[0]; pos < reg[1]; pos += CHUNK) {
                 int len = (int) Math.min(CHUNK, reg[1] - pos);
                 if (!m.read(pos, chunk, len)) continue;  // pages that cannot be read
                 scanned += len;
                 for (int i = 0; i + type.size <= len; i += type.align) {
                     if (!equal(decode(buf, i, type), want, type)) continue;
+                    if (h == null) h = new Hits(reg[0], reg[1] - reg[0], type.align);
+                    h.bits.set((int) ((pos + i - reg[0]) / type.align));
                     total++;
-                    if (n < MAX_RESULTS) {
-                        if (n == out.length) out = Arrays.copyOf(out, Math.min(MAX_RESULTS, out.length * 2));
-                        out[n++] = pos + i;
-                    }
                 }
             }
+            if (h != null) hits.add(h);
         }
         if (scanned == 0) throw new IOException("this device does not allow reading the app's memory");
-        results = out;
-        count = n;
+        bitmap = hits;
         found = total;
+        compact();
         return status();
     }
 
     /** Keeps the results that now hold [want]. */
     private String refine(double want) throws IOException {
         Memory m = memory();
-        int n = 0;
-        for (int i = 0; i < count; i++) {
-            if (equal(readValue(m, results[i], type), want, type)) results[n++] = results[i];
+        if (bitmap != null) {
+            long total = 0;
+            byte[] chunk = new byte[CHUNK];
+            ByteBuffer buf = ByteBuffer.wrap(chunk).order(ByteOrder.LITTLE_ENDIAN);
+            for (Hits h : bitmap) {
+                int bit = h.bits.nextSetBit(0);
+                while (bit >= 0) {
+                    // Read the chunk that starts at this result and check every result inside it.
+                    long pos = h.start + (long) bit * h.align;
+                    int len = (int) Math.min(CHUNK, h.end - pos);
+                    boolean readable = m.read(pos, chunk, len);
+                    int b = bit;
+                    while (b >= 0) {
+                        long at = (long) (b - bit) * h.align;
+                        if (at + type.size > len) break;  // first result of the next chunk
+                        if (readable && equal(decode(buf, (int) at, type), want, type)) total++;
+                        else h.bits.clear(b);
+                        b = h.bits.nextSetBit(b + 1);
+                    }
+                    bit = b;
+                }
+            }
+            found = total;
+            compact();
+        } else {
+            int n = 0;
+            for (int i = 0; i < count; i++) {
+                if (equal(readValue(m, results[i], type), want, type)) results[n++] = results[i];
+            }
+            count = n;
+            found = n;
         }
-        count = n;
-        found = n;
         return status();
     }
 
+    /** Turns the bitmap into a list once few enough results are left. */
+    private void compact() {
+        if (found > LIST_LIMIT) {
+            results = new long[0];
+            count = (int) Math.min(found, Integer.MAX_VALUE);
+            return;
+        }
+        long[] out = new long[(int) found];
+        int n = 0;
+        for (Hits h : bitmap)
+            for (int b = h.bits.nextSetBit(0); b >= 0 && n < out.length; b = h.bits.nextSetBit(b + 1)) out[n++] = h.start + (long) b * h.align;
+        results = out;
+        count = n;
+        bitmap = null;
+    }
+
     private String status() {
-        if (found > count) return String.format(Locale.US, "%,d results (%,d kept). Change the value in the game and refine.", found, count);
-        return String.format(Locale.US, "%,d results", count);
+        String s = String.format(Locale.US, "%,d results", found);
+        if (found > 5000) s += ". Change the value in the game, then refine with the new value.";
+        return s;
     }
 
     private void set(long addr, Type t, double value) throws IOException {
