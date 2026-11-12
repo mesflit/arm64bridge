@@ -2,12 +2,15 @@
 // functions, plus the registry of host implementations of guest imports.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
+#include <pthread.h>
+
 #include <cerrno>
 #include <string>
 #include <tuple>
 #include <type_traits>
 
 #include "common.h"
+
 #include "cpu.h"
 #include "guest_mem.h"
 
@@ -197,6 +200,9 @@ void register_pthread_thunks();
 void register_misc_thunks();
 void register_dl_thunks();
 void register_old_bionic_thunks();
+void register_signal_thunks();
+// Sends a guest signal to a guest thread (guest_signals.cpp). Returns 0 or an errno value.
+int guest_signal_send(Cpu* target, pthread_t host_thread, int sig);
 void register_android_thunks();
 void register_gles_thunks();
 void register_data_symbols();

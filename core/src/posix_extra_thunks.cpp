@@ -175,6 +175,7 @@ void register_posix_extra_thunks() {
         return epoll_ctl(epfd, op, fd, ge ? &he : nullptr);
     });
     auto ewait = +[](int epfd, GEpollEvent* out, int max, int timeout) -> int {
+        BlockingCall blocking;
         if (max <= 0) {
             errno = EINVAL;
             return -1;
@@ -188,7 +189,7 @@ void register_posix_extra_thunks() {
         }
         return n;
     };
-    static auto s_ewait = ewait;
+    static auto s_ewait = ewait;  // (ewait marks itself as blocking)
     reg("epoll_wait", ewait);
     reg("epoll_pwait", +[](int epfd, GEpollEvent* out, int max, int timeout, const void*) -> int { return s_ewait(epfd, out, max, timeout); });
     reg("eventfd", +[](u32 init, int flags) -> int { return eventfd(init, flags); });

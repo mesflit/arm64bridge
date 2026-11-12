@@ -475,6 +475,10 @@ void guest_crash(Cpu& c, const char* why) {
     fatal("guest code crashed (%s)", why);
 }
 
+void cpu_interrupt(Cpu& c) {
+    if (c.depth > 0) c.levels[c.depth - 1]->jit->HaltExecution(Dynarmic::HaltReason::UserDefined3);
+}
+
 // Runs inside translated code. Host functions read and write the guest registers in place.
 void Cpu::on_svc(u32 swi) {
     CpuLevel* lvl = levels[depth - 1];
@@ -515,6 +519,8 @@ void Cpu::on_svc(u32 swi) {
             r[15] = target & ~1u;
             pc_override = false;
         }
+        // A signal that arrived during the call runs now, before the guest continues.
+        if (pending_signals.load(std::memory_order_relaxed)) signals_deliver_pending(*this);
     }
     // Stale translations (library loaded, guest JIT flushed its cache): leave so the loop can clear them.
     if (epoch != mem_code_epoch()) lvl->jit->HaltExecution(Dynarmic::HaltReason::UserDefined2);
@@ -553,9 +559,12 @@ u64 Cpu::call(u32 fn, const u32* words, size_t nwords) {
         }
         lvl->jit->ClearHalt(Dynarmic::HaltReason::UserDefined1);
         lvl->jit->ClearHalt(Dynarmic::HaltReason::UserDefined2);
+        lvl->jit->ClearHalt(Dynarmic::HaltReason::UserDefined3);
         lvl->jit->Run();
         if (exit_pending || lvl->returned) break;
-        // Otherwise: halted so that stale translations can be cleared at the top of the loop.
+        // Otherwise: halted so that stale translations can be cleared at the top of the loop, or so
+        // that a signal sent to this thread runs between two instructions of the guest.
+        if (pending_signals.load(std::memory_order_relaxed)) signals_deliver_pending(*this);
     }
     u64 ret = (u64)regs[0] | ((u64)regs[1] << 32);
     depth--;

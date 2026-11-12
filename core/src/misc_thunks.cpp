@@ -93,6 +93,7 @@ u32 guest_syscall_args(Cpu& c, u32 nr, const u32 a[6]) {
                 tsp = &ts;
                 a3 = (unsigned long)tsp;
             }
+            BlockingCall blocking;
             long r = syscall(SYS_futex, g2h(a[0]), (int)a[1], (int)a[2], a3, g2h(a[4]), (int)a[5]);
             return wrap(r);
         }

@@ -139,6 +139,7 @@ struct ThreadRec {
     u32 stack_size = 0;
     std::atomic<u32> retval{0};
     bool detached = false;
+    std::atomic<Cpu*> cpu{nullptr};  // while the thread runs: where signals for it go
 };
 HandleTable<ThreadRec> g_threads;
 
@@ -175,6 +176,7 @@ void* thread_main(void* p) {
     Cpu& c = Cpu::current();
     c.thread_id = id;
     c.guest_thread = true;
+    t->cpu.store(&c);
     g_guest_threads.fetch_add(1);
     u32 ret = 0;
     try {
@@ -188,6 +190,7 @@ void* thread_main(void* p) {
     } catch (const ThreadExit&) {
     }
     jni_thread_exit(c);
+    t->cpu.store(nullptr);
     t->retval.store(ret);
     g_guest_threads.fetch_sub(1);
     return nullptr;
@@ -199,6 +202,7 @@ u32 self_id() {
         auto* t = new ThreadRec;
         t->host = pthread_self();
         t->detached = true;
+        t->cpu.store(&c);
         c.thread_id = g_threads.put(t);
     }
     return c.thread_id;
@@ -253,6 +257,7 @@ void register_pthread_thunks() {
             if (ret) *ret = 0;
             return 0;
         }
+        BlockingCall blocking;
         int r = pthread_join(t->host, nullptr);
         if (r == 0) {
             if (ret) *ret = t->retval.load();
@@ -269,7 +274,11 @@ void register_pthread_thunks() {
         ArgReader a(c);
         throw ThreadExit{A32()};
     });
-    reg("pthread_kill", +[](u32, int) -> int { return 0; });
+    reg("pthread_kill", +[](u32 id, int sig) -> int {
+        ThreadRec* t = g_threads.get(id);
+        if (!t) return ESRCH;
+        return guest_signal_send(t->cpu, t->host, sig);
+    });
     reg("pthread_setname_np", +[](u32, const char*) -> int { return 0; });
     reg("pthread_getname_np", +[](u32, char* b, size_t n) -> int { if (n) b[0] = 0; return 0; });
     reg("pthread_setschedparam", +[](u32, int, void*) -> int { return 0; });
@@ -334,7 +343,7 @@ void register_pthread_thunks() {
         pthread_mutex_t* h = get_mutex(m);
         int r = pthread_mutex_trylock(h);
         if (r != EBUSY) return r;
-        GilUnlock unlocked(Cpu::current_or_null());
+        BlockingCall blocking;
         return pthread_mutex_lock(h);
     });
     reg("pthread_mutex_trylock", +[](u32 m) -> int { return pthread_mutex_trylock(get_mutex(m)); });
@@ -373,23 +382,30 @@ void register_pthread_thunks() {
     });
     reg("pthread_cond_signal", +[](u32 cv) -> int { return pthread_cond_signal(get_cond(cv)); });
     reg("pthread_cond_broadcast", +[](u32 cv) -> int { return pthread_cond_broadcast(get_cond(cv)); });
-    reg("pthread_cond_wait", +[](u32 cv, u32 m) -> int { return pthread_cond_wait(get_cond(cv), get_mutex(m)); });
+    reg("pthread_cond_wait", +[](u32 cv, u32 m) -> int {
+        BlockingCall blocking;
+        return pthread_cond_wait(get_cond(cv), get_mutex(m));
+    });
     reg("pthread_cond_timedwait", +[](u32 cv, u32 m, const GTimespec* ts) -> int {
+        BlockingCall blocking;
         timespec h = abs_from_guest(ts);
         return pthread_cond_timedwait(get_cond(cv), get_mutex(m), &h);
     });
     auto mono_wait = +[](u32 cv, u32 m, const GTimespec* ts) -> int {
         // Only valid for condition variables that use the realtime clock (the default).
+        BlockingCall blocking;
         timespec h = mono_to_real(ts);
         return pthread_cond_timedwait(get_cond(cv), get_mutex(m), &h);
     };
     reg("pthread_cond_timedwait_monotonic_np", mono_wait);
     reg("pthread_cond_timedwait_monotonic", mono_wait);
     reg("pthread_cond_timedwait_relative_np", +[](u32 cv, u32 m, const GTimespec* rel) -> int {
+        BlockingCall blocking;
         timespec h = realtime_after(rel);
         return pthread_cond_timedwait(get_cond(cv), get_mutex(m), &h);
     });
     reg("pthread_cond_timeout_np", +[](u32 cv, u32 m, u32 ms) -> int {
+        BlockingCall blocking;
         GTimespec rel{(i32)(ms / 1000), (i32)(ms % 1000) * 1000000};
         timespec h = realtime_after(&rel);
         return pthread_cond_timedwait(get_cond(cv), get_mutex(m), &h);
@@ -416,14 +432,14 @@ void register_pthread_thunks() {
     reg("pthread_rwlock_rdlock", +[](u32 l) -> int {
         pthread_rwlock_t* h = get_rwlock(l);
         if (pthread_rwlock_tryrdlock(h) == 0) return 0;
-        GilUnlock unlocked(Cpu::current_or_null());
+        BlockingCall blocking;
         return pthread_rwlock_rdlock(h);
     });
     reg("pthread_rwlock_tryrdlock", +[](u32 l) -> int { return pthread_rwlock_tryrdlock(get_rwlock(l)); });
     reg("pthread_rwlock_wrlock", +[](u32 l) -> int {
         pthread_rwlock_t* h = get_rwlock(l);
         if (pthread_rwlock_trywrlock(h) == 0) return 0;
-        GilUnlock unlocked(Cpu::current_or_null());
+        BlockingCall blocking;
         return pthread_rwlock_wrlock(h);
     });
     reg("pthread_rwlock_trywrlock", +[](u32 l) -> int { return pthread_rwlock_trywrlock(get_rwlock(l)); });
@@ -489,12 +505,13 @@ void register_pthread_thunks() {
     reg("sem_wait", +[](u32 s) -> int {
         sem_t* h = get_sem(s, false);
         if (sem_trywait(h) == 0) return 0;
-        GilUnlock unlocked(Cpu::current_or_null());
+        BlockingCall blocking;
         return sem_wait(h);
     });
     reg("sem_trywait", +[](u32 s) -> int { return sem_trywait(get_sem(s, false)); });
     reg("sem_post", +[](u32 s) -> int { return sem_post(get_sem(s, false)); });
     reg("sem_timedwait", +[](u32 s, const GTimespec* ts) -> int {
+        BlockingCall blocking;
         timespec h = abs_from_guest(ts);
         return sem_timedwait(get_sem(s, false), &h);
     });

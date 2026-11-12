@@ -37,6 +37,7 @@ public final class GuestDemo {
     public static native int foreignImports();
     public static native int soinfoModule();
     public static native int oldBionic();
+    public static native int stopTheWorld();
     // Registered from JNI_OnLoad with RegisterNatives:
     public native String registered(int x, String s);
     public static native boolean sameEnv();
@@ -89,6 +90,8 @@ public final class GuestDemo {
         check(sb, failed, "old-style handle of an app library (" + soinfoModule + ")", soinfoModule == 0);
         int oldBionic = oldBionic();
         check(sb, failed, "old bionic: __page_size, atomics, SHA1 (" + oldBionic + ")", oldBionic == 0);
+        int stw = stopTheWorld();
+        check(sb, failed, "signals: stop and resume threads like a GC (" + stw + ")", stw == 0);
         // Game loop frame sleep: 10 ms into a 30 ms frame it must sleep about 20 ms (booster off).
         long sleepStart = System.nanoTime();
         int slept = frameSleep(10);

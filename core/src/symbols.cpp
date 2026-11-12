@@ -89,6 +89,7 @@ void thunks_init() {
         register_misc_thunks();
         register_dl_thunks();
         register_old_bionic_thunks();
+        register_signal_thunks();
         register_android_thunks();
         register_gles_thunks();
         register_data_symbols();

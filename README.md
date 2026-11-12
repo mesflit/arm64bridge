@@ -149,6 +149,7 @@ Runtime files in `core/src`:
 | `cpu.*` | ARMv7 CPU on dynarmic, host function traps, kernel helpers, crash reports |
 | `elf_loader.*` | Loader for 32-bit ARM libraries |
 | `dl_thunks.cpp` | dlopen/dlsym compatible with Android 2.x (old-style soinfo handles) |
+| `guest_signals.cpp` | Signals between guest threads (handlers, pthread_kill, sigsuspend), as used by garbage collectors |
 | `old_bionic_thunks.cpp` | What the C library of Android before 5.0 exported and later removed (`__page_size`, `__atomic_*`, SHA1, ...) |
 | `jni_bridge.*`, `trampoline.S` | JNI between the 64-bit VM and 32-bit code |
 | `libc_thunks.cpp`, `stdio_thunks.cpp`, `math_thunks.cpp`, `pthread_thunks.cpp`, `posix_extra_thunks.cpp`, `misc_thunks.cpp` | C library for guest code |

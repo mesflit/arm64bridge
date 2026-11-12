@@ -64,7 +64,8 @@ add_library(arm64bridge SHARED
   src/limiter_probe.cpp
   src/frame_cap.cpp
   src/dl_thunks.cpp
-  src/old_bionic_thunks.cpp)
+  src/old_bionic_thunks.cpp
+  src/guest_signals.cpp)
 target_include_directories(arm64bridge PRIVATE src)
 set(A64B_VERSION "dev" CACHE STRING "Version string reported by the runtime")
 target_compile_definitions(arm64bridge PRIVATE A64B_VERSION="${A64B_VERSION}")

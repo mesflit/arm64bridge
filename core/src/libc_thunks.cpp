@@ -18,6 +18,7 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/uio.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <wchar.h>
 #include <wctype.h>
@@ -516,6 +517,7 @@ void register_libc_thunks() {
     });
     reg("clock", +[]() -> u32 { return (u32)clock(); });
     reg("nanosleep", +[](const GTimespec* req, GTimespec* rem) -> int {
+        BlockingCall blocking;
         timespec h = from_guest(req), hr = {};
         probe_time_call(2, (u64)h.tv_sec * 1000000ull + (u64)h.tv_nsec / 1000);
         if (int mode = limiter_mode_for_this_thread()) {
@@ -534,7 +536,12 @@ void register_libc_thunks() {
         if (rem) to_guest(rem, hr);
         return r;
     });
+    reg("waitpid", +[](int pid, int* status, int options) -> int {
+        BlockingCall blocking;
+        return waitpid(pid, status, options);
+    });
     reg("usleep", +[](u32 us) -> int {
+        BlockingCall blocking;
         probe_time_call(2, us);
         if (Cpu* c = Cpu::current_or_null()) frame_cap_on_sleep(*c, us);
         if (int mode = limiter_mode_for_this_thread()) {
@@ -543,7 +550,10 @@ void register_libc_thunks() {
         }
         return usleep(us);
     });
-    reg("sleep", +[](u32 s) -> u32 { return sleep(s); });
+    reg("sleep", +[](u32 s) -> u32 {
+        BlockingCall blocking;
+        return sleep(s);
+    });
     auto tm_conv = +[](const i32* t, GTm* out, int local) -> u32 {
         time_t tt = *t;
         struct tm h;
@@ -590,7 +600,10 @@ void register_libc_thunks() {
     RAW(openat) { ArgReader a(c); int d = A32(); const char* p = STR(); int fl = A32(); int mode = A32(); c.set_ret32((u32)openat(d, p, translate_open_flags(fl), mode)); });
     reg("creat", +[](const char* p, int mode) -> int { return creat(p, mode); });
     reg("close", +[](int fd) -> int { return close(fd); });
-    reg("read", +[](int fd, void* b, size_t n) -> ssize_t { return read(fd, b, n); });
+    reg("read", +[](int fd, void* b, size_t n) -> ssize_t {
+        BlockingCall blocking;
+        return read(fd, b, n);
+    });
     reg("__read_chk", +[](int fd, void* b, size_t n, size_t) -> ssize_t { return read(fd, b, n); });
     reg("write", +[](int fd, const void* b, size_t n) -> ssize_t { return write(fd, b, n); });
     reg("pread", +[](int fd, void* b, size_t n, i32 off) -> ssize_t { return pread(fd, b, n, off); });
@@ -763,18 +776,31 @@ void register_libc_thunks() {
     reg("connect", +[](int fd, const sockaddr* sa, socklen_t l) -> int { return connect(fd, sa, l); });
     reg("bind", +[](int fd, const sockaddr* sa, socklen_t l) -> int { return bind(fd, sa, l); });
     reg("listen", +[](int fd, int n) -> int { return listen(fd, n); });
-    reg("accept", +[](int fd, sockaddr* sa, socklen_t* l) -> int { return accept(fd, sa, l); });
+    reg("accept", +[](int fd, sockaddr* sa, socklen_t* l) -> int {
+        BlockingCall blocking;
+        return accept(fd, sa, l);
+    });
     reg("send", +[](int fd, const void* b, size_t n, int f) -> ssize_t { return send(fd, b, n, f); });
-    reg("recv", +[](int fd, void* b, size_t n, int f) -> ssize_t { return recv(fd, b, n, f); });
+    reg("recv", +[](int fd, void* b, size_t n, int f) -> ssize_t {
+        BlockingCall blocking;
+        return recv(fd, b, n, f);
+    });
     reg("sendto", +[](int fd, const void* b, size_t n, int f, const sockaddr* sa, socklen_t l) -> ssize_t { return sendto(fd, b, n, f, sa, l); });
-    reg("recvfrom", +[](int fd, void* b, size_t n, int f, sockaddr* sa, socklen_t* l) -> ssize_t { return recvfrom(fd, b, n, f, sa, l); });
+    reg("recvfrom", +[](int fd, void* b, size_t n, int f, sockaddr* sa, socklen_t* l) -> ssize_t {
+        BlockingCall blocking;
+        return recvfrom(fd, b, n, f, sa, l);
+    });
     reg("shutdown", +[](int fd, int how) -> int { return shutdown(fd, how); });
     reg("setsockopt", +[](int fd, int lvl, int opt, const void* v, socklen_t l) -> int { return setsockopt(fd, lvl, opt, v, l); });
     reg("getsockopt", +[](int fd, int lvl, int opt, void* v, socklen_t* l) -> int { return getsockopt(fd, lvl, opt, v, l); });
     reg("getsockname", +[](int fd, sockaddr* sa, socklen_t* l) -> int { return getsockname(fd, sa, l); });
     reg("getpeername", +[](int fd, sockaddr* sa, socklen_t* l) -> int { return getpeername(fd, sa, l); });
-    reg("poll", +[](pollfd* fds, u32 n, int timeout) -> int { return poll(fds, n, timeout); });
+    reg("poll", +[](pollfd* fds, u32 n, int timeout) -> int {
+        BlockingCall blocking;
+        return poll(fds, n, timeout);
+    });
     reg("select", +[](int n, fd_set* r, fd_set* w, fd_set* e, GTimeval* tv) -> int {
+        BlockingCall blocking;
         timeval h, *hp = nullptr;
         if (tv) { h.tv_sec = tv->tv_sec; h.tv_usec = tv->tv_usec; hp = &h; }
         return select(n, r, w, e, hp);
@@ -789,10 +815,8 @@ void register_libc_thunks() {
     reg("htons", +[](u32 v) -> u32 { return __builtin_bswap16((u16)v); });
     reg("ntohs", +[](u32 v) -> u32 { return __builtin_bswap16((u16)v); });
 
-    // ------------------------------------------------------------- signals (not delivered to guest code)
-    reg("signal", +[](int, u32) -> u32 { return 0; });
-    reg("bsd_signal", +[](int, u32) -> u32 { return 0; });
-    reg("sigaction", +[](int, void*, void* old) -> int { if (old) memset(old, 0, 16); return 0; });
+    // ------------------------------------------------------------- signal sets and masks
+    // (handlers, raise, kill and sigsuspend are in guest_signals.cpp; masks are not emulated)
     reg("sigprocmask", +[](int, void*, void*) -> int { return 0; });
     reg("pthread_sigmask", +[](int, void*, void*) -> int { return 0; });
     reg("sigemptyset", +[](u32* s) -> int { *s = 0; return 0; });
@@ -801,11 +825,6 @@ void register_libc_thunks() {
     reg("sigdelset", +[](u32* s, int n) -> int { *s &= ~(1u << ((n - 1) & 31)); return 0; });
     reg("sigismember", +[](const u32* s, int n) -> int { return (*s >> ((n - 1) & 31)) & 1; });
     reg("sigaltstack", +[](void*, void*) -> int { return 0; });
-    reg("raise", +[](int sig) -> int { fatal("guest raised signal %d", sig); });
-    reg("kill", +[](int pid, int sig) -> int {
-        if (pid == getpid() && sig != 0) fatal("guest sent signal %d to itself", sig);
-        return 0;
-    });
     reg("alarm", +[](u32) -> u32 { return 0; });
 
     // ------------------------------------------------------------- system properties

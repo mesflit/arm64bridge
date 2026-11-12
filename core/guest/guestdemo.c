@@ -631,3 +631,85 @@ JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_oldBionic(JNIEnv* 
     for (int i = 0; i < 20; i++) if (d[i] != want[i]) failed |= 4;
     return failed;
 }
+
+/* The way Boehm GC (Mono) stops threads: SIGPWR to each, whose handler acknowledges with a semaphore and
+   waits in sigsuspend until SIGXCPU resumes it. One thread runs guest code, one waits in a condition
+   variable. Returns 0 when both stop and resume. */
+/* 32-bit bionic declarations (the guest is built with minimal headers). */
+typedef unsigned long g_sigset_t;
+struct g_sigaction { void (*handler)(int); g_sigset_t mask; int flags; void (*restorer)(void); };
+typedef struct { volatile unsigned int count; int reserved[3]; } g_sem_t;
+#define G_SIGXCPU 24
+#define G_SIGPWR 30
+int sigaction(int sig, const struct g_sigaction* act, struct g_sigaction* old);
+int sigemptyset(g_sigset_t* set);
+int sigsuspend(const g_sigset_t* mask);
+int pthread_kill(pthread_t t, int sig);
+int sem_init(g_sem_t* s, int pshared, unsigned value);
+int sem_post(g_sem_t* s);
+int sem_trywait(g_sem_t* s);
+typedef struct { int value; } g_cond_t;  /* bionic 32-bit pthread_cond_t */
+int pthread_cond_wait(g_cond_t* c, pthread_mutex_t* m);
+int pthread_cond_broadcast(g_cond_t* c);
+static g_sem_t g_ack;
+static volatile int g_resumed, g_stop_workers, g_spins;
+static pthread_mutex_t g_wait_lock = PTHREAD_MUTEX_INITIALIZER;
+static g_cond_t g_wait_cond = {0};
+static void on_suspend(int sig) {
+    sem_post(&g_ack);
+    g_sigset_t m;
+    sigemptyset(&m);
+    sigsuspend(&m);  /* returns after the restart signal's handler ran */
+}
+static void on_restart(int sig) { __sync_fetch_and_add(&g_resumed, 1); }
+static void* spinner(void* arg) {
+    while (!g_stop_workers) g_spins++;
+    return 0;
+}
+static void* waiter(void* arg) {
+    pthread_mutex_lock(&g_wait_lock);
+    while (!g_stop_workers) pthread_cond_wait(&g_wait_cond, &g_wait_lock);
+    pthread_mutex_unlock(&g_wait_lock);
+    return 0;
+}
+static int wait_acks(int n) {
+    for (int tries = 0; tries < 300 && n > 0; tries++) {
+        while (n > 0 && sem_trywait(&g_ack) == 0) n--;
+        if (n > 0) usleep(10000);
+    }
+    return n;
+}
+JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_stopTheWorld(JNIEnv* env, jclass cls) {
+    struct g_sigaction sa = {0};
+    sa.handler = on_suspend;
+    sigaction(G_SIGPWR, &sa, 0);
+    sa.handler = on_restart;
+    sigaction(G_SIGXCPU, &sa, 0);
+    sem_init(&g_ack, 0, 0);
+    g_resumed = g_stop_workers = g_spins = 0;
+    pthread_t a, b;
+    pthread_create(&a, 0, spinner, 0);
+    pthread_create(&b, 0, waiter, 0);
+    usleep(50000);
+    int failed = 0;
+    pthread_kill(a, G_SIGPWR);
+    pthread_kill(b, G_SIGPWR);
+    if (wait_acks(2)) failed |= 1;                 /* both acknowledged: the world is stopped */
+    int spins = g_spins;
+    usleep(30000);
+    if (!(failed & 1) && g_spins != spins) failed |= 2;  /* the spinner really stopped */
+    pthread_kill(a, G_SIGXCPU);
+    pthread_kill(b, G_SIGXCPU);
+    for (int i = 0; i < 300 && g_resumed < 2; i++) usleep(10000);
+    if (g_resumed != 2) failed |= 4;
+    spins = g_spins;
+    usleep(30000);
+    if (g_spins == spins) failed |= 8;              /* the spinner runs again */
+    g_stop_workers = 1;
+    pthread_mutex_lock(&g_wait_lock);
+    pthread_cond_broadcast(&g_wait_cond);
+    pthread_mutex_unlock(&g_wait_lock);
+    pthread_join(a, 0);
+    pthread_join(b, 0);
+    return failed;
+}

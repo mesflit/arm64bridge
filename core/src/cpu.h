@@ -92,9 +92,20 @@ struct Cpu {
     // Called by translated code for "svc #n" (n = trap slot + 1, 0 = raw system call).
     void on_svc(u32 swi);
 
+    // Guest signals (guest_signals.cpp): pending signal bits (bit n-1 = signal n), how many blocking
+    // host calls the thread is in, whether it waits in sigsuspend, and a counter to wake that wait.
+    std::atomic<u64> pending_signals{0};
+    std::atomic<int> blocking{0};
+    std::atomic<bool> in_sigsuspend{false};
+    std::atomic<int> signal_seq{0};
+
+    // The JIT of each nesting level (used by cpu_interrupt).
+    friend void cpu_interrupt(Cpu& c);
+
   private:
     Cpu();
     std::vector<CpuLevel*> levels;
+
     friend struct CpuHolder;
 };
 
@@ -125,10 +136,23 @@ extern std::atomic<int> g_render_tid;  // thread that last called eglSwapBuffers
 // Implemented by the loader: "libfoo.so+0x1234 (symbol)".
 std::string describe_address(u32 addr);
 
-// Guest threads run in parallel, each on its own JIT. These remain as no-ops so that host
-// functions can keep marking the places where they may block.
-struct GilUnlock {
-    explicit GilUnlock(Cpu*) {}
+// Marks a host call that may wait for a long time (locks, sleeps, I/O). Signals sent to the thread
+// meanwhile are delivered during the wait, as the kernel would (see guest_signals.cpp).
+struct BlockingCall {
+    Cpu* c;
+    explicit BlockingCall(Cpu* cpu = Cpu::current_or_null()) : c(cpu) {
+        if (c) c->blocking.fetch_add(1, std::memory_order_relaxed);
+    }
+    ~BlockingCall() {
+        if (c) c->blocking.fetch_sub(1, std::memory_order_relaxed);
+    }
+    BlockingCall(const BlockingCall&) = delete;
+    BlockingCall& operator=(const BlockingCall&) = delete;
 };
+
+// Stops the thread's running JIT at the next block boundary (safe from a signal handler on that thread).
+void cpu_interrupt(Cpu& c);
+// Runs the guest handlers of the signals pending on this thread (guest_signals.cpp).
+void signals_deliver_pending(Cpu& c);
 
 }  // namespace a64b
