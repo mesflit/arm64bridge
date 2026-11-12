@@ -11,6 +11,9 @@ enum { GPROT_READ = 1, GPROT_WRITE = 2, GPROT_EXEC = 4 };
 bool mem_init();
 u32 mem_arena_base();
 u32 mem_arena_size();
+// Second arena below 2 GiB (size 0 if there is none).
+u32 mem_low_arena_base();
+u32 mem_low_arena_size();
 u32 mem_page_size();
 bool mem_contains(u64 host_addr);
 // True if the address lies in pages that are currently allocated (safe to read). Never blocks.

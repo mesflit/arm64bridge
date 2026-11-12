@@ -17,6 +17,14 @@
 namespace a64b {
 
 static u32 g_base = 0, g_size = 0, g_page = 4096;
+// A second, smaller arena below 2 GiB, handed out first. Old code treats pointers as signed numbers
+// (Android 2.x's linker copied into games checks "mmap(...) < 0"); on a 32-bit device most addresses
+// were below 2 GiB, so they were positive.
+static u32 g_low_base = 0, g_low_size = 0;
+static bool in_arena(u64 a, u64 len = 1) {
+    if (a >= g_base && a + len <= (u64)g_base + g_size) return true;
+    return g_low_size && a >= g_low_base && a + len <= (u64)g_low_base + g_low_size;
+}
 static std::mutex g_page_mu;
 static std::map<u32, u32> g_free_regions;            // start -> size
 struct Region { u32 size; bool exec; };
@@ -25,6 +33,8 @@ static std::atomic<u64> g_epoch{1};
 
 u32 mem_arena_base() { return g_base; }
 u32 mem_arena_size() { return g_size; }
+u32 mem_low_arena_base() { return g_low_base; }
+u32 mem_low_arena_size() { return g_low_size; }
 u32 mem_page_size() { return g_page; }
 // Guest mappings outside the arena: made when the guest asks for a specific address there (a game's
 // own library loader with fixed load addresses). Few, so a small array that readers scan without a lock.
@@ -42,7 +52,7 @@ static int ext_index(u64 a) {
 }
 
 bool mem_contains(u64 a) {
-    if (a >= g_base && a < (u64)g_base + g_size) return true;
+    if (in_arena(a)) return true;
     return g_ext_count.load(std::memory_order_relaxed) != 0 && ext_index(a) >= 0;
 }
 u64 mem_code_epoch() { return g_epoch.load(std::memory_order_relaxed); }
@@ -50,7 +60,7 @@ void mem_bump_code_epoch() { g_epoch.fetch_add(1, std::memory_order_relaxed); }
 
 bool mem_is_mapped(u32 addr, u32 len) {
     if (!mem_contains(addr) || !mem_contains((u64)addr + len - 1)) return false;
-    if (addr < g_base || addr >= (u64)g_base + g_size) return true;  // external mapping
+    if (!in_arena(addr)) return true;  // external mapping
     std::unique_lock<std::mutex> lk(g_page_mu, std::try_to_lock);
     if (!lk.owns_lock()) return false;
     auto it = g_used_regions.upper_bound(addr);
@@ -60,6 +70,37 @@ bool mem_is_mapped(u32 addr, u32 len) {
 }
 
 static u32 round_up(u32 v, u32 a) { return (v + a - 1) & ~(a - 1); }
+
+// Reserve up to 256 MiB below 2 GiB (half of a gap at most: ART also allocates there).
+static void reserve_low_arena(const std::vector<std::pair<u64, u64>>& gaps, u64 main_start, u64 main_size) {
+    const u64 kAlign = 1u << 20, kTop = 0x80000000ull;
+    u64 want = 256ull << 20;
+    if (const char* e = getenv("A64B_LOW_ARENA_MB")) want = strtoull(e, nullptr, 10) << 20;
+    if (!want) return;
+    std::vector<std::pair<u64, u64>> low;
+    for (auto& g : gaps) {
+        u64 lo = (g.first + kAlign - 1) & ~(kAlign - 1), hi = std::min(g.second, kTop) & ~(kAlign - 1);
+        if (main_start < hi && main_start + main_size > lo) continue;
+        if (hi > lo + (32ull << 20)) low.emplace_back(lo, hi);
+    }
+    std::sort(low.begin(), low.end(), [](auto& a, auto& b) { return (a.second - a.first) > (b.second - b.first); });
+    for (auto& g : low) {
+        u64 size = std::min<u64>(want, (g.second - g.first) / 2) & ~(kAlign - 1);
+        u64 start = g.second - size;
+        void* p = mmap((void*)start, size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED_NOREPLACE, -1, 0);
+        if (p == MAP_FAILED) continue;
+        if ((u64)p != start) {
+            munmap(p, size);
+            continue;
+        }
+        g_low_base = (u32)start;
+        g_low_size = (u32)size;
+        g_free_regions[g_low_base] = g_low_size;
+        LOGI("guest arena below 2 GiB: 0x%08x - 0x%08x (%u MiB), used first", g_low_base, g_low_base + g_low_size, g_low_size >> 20);
+        return;
+    }
+    LOGI("no room for a guest arena below 2 GiB");
+}
 
 bool mem_init() {
     if (g_base) return true;
@@ -111,6 +152,7 @@ bool mem_init() {
         g_size = (u32)size;
         g_free_regions[g_base] = g_size;
         LOGI("guest arena: 0x%08x - 0x%08x (%u MiB), host page %u", g_base, g_base + g_size, g_size >> 20, g_page);
+        if (g_base >= 0x80000000u) reserve_low_arena(gaps, start, size);
         return true;
     }
     LOGE("no usable address space below 4 GiB for the guest arena");
@@ -204,8 +246,7 @@ u32 page_map_at(u32 addr, u32 size, int host_prot, int host_flags, int fd, i64 o
     const int type = (host_flags & MAP_SHARED) ? MAP_SHARED : MAP_PRIVATE;
     const int anon = fd < 0 ? MAP_ANONYMOUS : 0;
     std::lock_guard<std::mutex> lk(g_page_mu);
-    const bool in_arena = addr >= g_base && (u64)addr + size <= (u64)g_base + g_size;
-    if (in_arena) {
+    if (in_arena(addr, size)) {
         if (covered_by_used(addr, size)) {
             if (!fixed) return 0;  // a hint for memory that is in use
             if (mmap(g2h(addr), size, prot, type | anon | MAP_FIXED, fd, offset) == MAP_FAILED) return 0;
@@ -234,7 +275,9 @@ u32 page_map_at(u32 addr, u32 size, int host_prot, int host_flags, int fd, i64 o
         g_used_regions[addr] = Region{size, exec};
         return addr;
     }
-    if ((u64)addr + size > g_base && addr < (u64)g_base + g_size) return 0;  // straddles the arena edge
+    if (((u64)addr + size > g_base && addr < (u64)g_base + g_size) ||
+        (g_low_size && (u64)addr + size > g_low_base && addr < (u64)g_low_base + g_low_size))
+        return 0;  // straddles an arena edge
     // Outside the arena.
     int e = ext_index(addr);
     if (e >= 0) {
@@ -263,7 +306,7 @@ bool page_free(u32 addr, u32 size) {
     size = round_up(size, g_page);
     if (!mem_contains(addr) || !size || (addr & (g_page - 1))) return false;
     std::lock_guard<std::mutex> lk(g_page_mu);
-    if (addr < g_base || addr >= (u64)g_base + g_size) {
+    if (!in_arena(addr)) {
         // External mapping: give the pages back; the range stays reserved for the guest.
         int e = ext_index(addr);
         if (e < 0) return false;

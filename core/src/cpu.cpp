@@ -154,6 +154,8 @@ bool cpu_global_init() {
         g_page_table->fill(nullptr);
         for (u64 a = mem_arena_base(); a < (u64)mem_arena_base() + mem_arena_size(); a += 4096)
             (*g_page_table)[a >> 12] = reinterpret_cast<std::uint8_t*>(static_cast<uintptr_t>(a));
+        for (u64 a = mem_low_arena_base(); a < (u64)mem_low_arena_base() + mem_low_arena_size(); a += 4096)
+            (*g_page_table)[a >> 12] = reinterpret_cast<std::uint8_t*>(static_cast<uintptr_t>(a));
         g_monitor = new Dynarmic::ExclusiveMonitor(kMaxProcessors);
         for (size_t i = kMaxProcessors; i-- > 0;) g_free_pids.push_back(i);
         g_trap_base = base;
