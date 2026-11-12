@@ -608,3 +608,26 @@ JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_soinfoModule(JNIEn
     }
     return 2;
 }
+
+/* Old bionic: __page_size, __atomic_inc and SHA1 ("abc" -> a9993e36...). Returns 0 when all work. */
+extern unsigned __page_size;
+int __atomic_inc(volatile int* p);
+typedef struct { unsigned state[5]; unsigned count[2]; unsigned char buffer[64]; } SHA1_CTX;
+void SHA1Init(SHA1_CTX* c);
+void SHA1Update(SHA1_CTX* c, const unsigned char* d, unsigned n);
+void SHA1Final(unsigned char digest[20], SHA1_CTX* c);
+JNIEXPORT jint JNICALL Java_com_mesflit_arm64bridge_GuestDemo_oldBionic(JNIEnv* env, jclass cls) {
+    int failed = 0;
+    if (__page_size != 4096) failed |= 1;
+    volatile int n = 41;
+    if (__atomic_inc(&n) != 41 || n != 42) failed |= 2;
+    SHA1_CTX c;
+    unsigned char d[20];
+    SHA1Init(&c);
+    SHA1Update(&c, (const unsigned char*)"abc", 3);
+    SHA1Final(d, &c);
+    static const unsigned char want[20] = {0xa9, 0x99, 0x3e, 0x36, 0x47, 0x06, 0x81, 0x6a, 0xba, 0x3e,
+                                           0x25, 0x71, 0x78, 0x50, 0xc2, 0x6c, 0x9c, 0xd0, 0xd8, 0x9d};
+    for (int i = 0; i < 20; i++) if (d[i] != want[i]) failed |= 4;
+    return failed;
+}
