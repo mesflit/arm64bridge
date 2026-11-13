@@ -1,8 +1,9 @@
-.gradle/
-build/
-local.properties
-.idea/
 *.iml
-.cxx/
-app/.cxx/
 .DS_Store
+.cxx/
+.gradle/
+.idea/
+app/.cxx/
+build/
+core/target/
+local.properties
