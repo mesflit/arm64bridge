@@ -1,0 +1,14 @@
+[package]
+name = "a64bshim"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-or-later"
+description = "Shim library: one copy per 32-bit library of a patched app, under that library's name"
+
+[lib]
+name = "a64bshim"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+libc = "0.2"

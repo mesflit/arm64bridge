@@ -1,0 +1,32 @@
+[package]
+name = "arm64bridge"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-or-later"
+description = "ARM64Bridge runtime: ARMv7 CPU, loader, thunks and JNI bridge for 32-bit ARM guest libraries"
+build = "build.rs"
+
+[lib]
+name = "arm64bridge"
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[features]
+# Temporary: use dynarmic (C++) instead of the built-in CPU. Needs A64B_DYNARMIC_DIR.
+dynarmic = ["dep:cc"]
+
+[dependencies]
+libc = "0.2"
+jni-sys = "0.3"
+
+[build-dependencies]
+cc = { version = "1", optional = true }
+
+[profile.release]
+opt-level = 3
+debug = false
+panic = "unwind"
+codegen-units = 4
+
+[workspace]
+members = [".", "shim"]
